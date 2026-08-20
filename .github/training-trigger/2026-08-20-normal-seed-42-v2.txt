@@ -1,0 +1,4 @@
+preset=normal
+seed=42
+algorithms=ppo,sac,td3
+reason=mixed curriculum + 40s horizon + best checkpoint retention

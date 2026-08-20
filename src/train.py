@@ -5,6 +5,7 @@ import importlib.metadata
 import json
 import math
 import random
+import shutil
 import time
 from pathlib import Path
 
@@ -15,9 +16,10 @@ from stable_baselines3 import PPO, SAC, TD3
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.noise import NormalActionNoise
 
-from .environment import PhysicsConfig, SensorNoiseConfig, make_acrobot_env
+from .curriculum import make_training_env
+from .environment import PhysicsConfig, SensorNoiseConfig
 from .evaluation import evaluate_episode, evaluate_policy
-from .reporting import create_plots, write_metrics_csv, write_summary
+from .reporting import checkpoint_rank, create_plots, select_best_record, write_metrics_csv, write_summary
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALGORITHMS = {"ppo", "sac", "td3"}
@@ -62,24 +64,24 @@ def record_stage(
     video_index: int,
     physics: PhysicsConfig,
     noise: SensorNoiseConfig,
-) -> None:
+) -> dict:
     metrics = evaluate_policy(policy, evaluation_seeds, physics=physics, sensor_noise=noise)
     evaluate_episode(policy, video_seed, physics, noise, videos_dir / f"{video_index:02d}_{stage}.mp4")
-    records.append(
-        {
-            "stage": stage,
-            "progress": progress,
-            "timesteps": timesteps,
-            "training_wall_time_s": training_wall_time_s,
-            **metrics.to_dict(),
-        }
-    )
+    record = {
+        "stage": stage,
+        "progress": progress,
+        "timesteps": timesteps,
+        "training_wall_time_s": training_wall_time_s,
+        **metrics.to_dict(),
+    }
+    records.append(record)
     capture_t = "-" if math.isnan(metrics.mean_capture_time_s) else f"{metrics.mean_capture_time_s:.2f}s"
     print(
         f"[{stage}] steps={timesteps:,} return={metrics.mean_return:.1f} "
         f"capture={metrics.capture_rate*100:.1f}% capture_t={capture_t} "
         f"final_stable={metrics.final_stable_rate*100:.1f}% train_wall={training_wall_time_s:.1f}s"
     )
+    return record
 
 
 def make_model(
@@ -94,7 +96,7 @@ def make_model(
     if algorithm == "ppo":
         n_envs = int(cfg["n_envs"])
         train_env = make_vec_env(
-            lambda: make_acrobot_env(physics=physics, sensor_noise=noise, reset_mode="near_upright"),
+            lambda: make_training_env(physics=physics, sensor_noise=noise, reset_mode="near_upright"),
             n_envs=n_envs,
             seed=seed,
         )
@@ -120,7 +122,7 @@ def make_model(
         )
         return model
 
-    train_env = make_acrobot_env(physics=physics, sensor_noise=noise, reset_mode="near_upright")
+    train_env = make_training_env(physics=physics, sensor_noise=noise, reset_mode="near_upright")
     common = dict(
         learning_rate=float(cfg["learning_rate"]),
         buffer_size=int(cfg["buffer_size"]),
@@ -180,6 +182,8 @@ def main() -> None:
 
     cumulative_target = 0
     training_wall_time_s = 0.0
+    best_record: dict | None = None
+    last_stage = ""
     for video_index, item in enumerate(benchmark["curriculum"], start=1):
         stage = str(item["stage"])
         mode = str(item["reset_mode"])
@@ -195,13 +199,29 @@ def main() -> None:
         model.learn(total_timesteps=additional, reset_num_timesteps=False, progress_bar=False, log_interval=20)
         training_wall_time_s += time.perf_counter() - started
         cumulative_target = target
-        model.save(models_dir / f"{stage}.zip")
-        record_stage(
+        last_stage = stage
+        stage_model_path = models_dir / f"{stage}.zip"
+        model.save(stage_model_path)
+        current = record_stage(
             records, stage, fraction, int(model.num_timesteps), training_wall_time_s, model,
             evaluation_seeds, video_seed, videos_dir, video_index, physics, noise,
         )
+        if best_record is None or checkpoint_rank(current) > checkpoint_rank(best_record):
+            best_record = dict(current)
+            shutil.copy2(stage_model_path, models_dir / "best.zip")
+            (output_dir / "best-checkpoint.json").write_text(
+                json.dumps(best_record, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            print(
+                f"New best checkpoint={stage} final_stable={current['final_stable_rate']*100:.1f}% "
+                f"capture={current['capture_rate']*100:.1f}% goal={current['goal_ratio']*100:.1f}%"
+            )
 
     model.get_env().close()
+    if not last_stage:
+        raise RuntimeError("No curriculum stage completed")
+    shutil.copy2(models_dir / f"{last_stage}.zip", models_dir / "final.zip")
+    best_record = select_best_record(records)
     write_metrics_csv(records, output_dir / "metrics.csv")
     create_plots(records, plots_dir)
     write_summary(records, output_dir / "summary.md", args.algorithm, args.preset, args.seed)
@@ -218,6 +238,7 @@ def main() -> None:
         "physics": physics.to_dict(),
         "sensor_noise": noise.to_dict(),
         "curriculum": benchmark["curriculum"],
+        "best_checkpoint": best_record,
         "algorithm_config": algorithm_configs[args.algorithm],
         "versions": version_info(),
     }

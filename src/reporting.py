@@ -13,6 +13,22 @@ FIELDS = [
 ]
 
 
+def checkpoint_rank(record: dict) -> tuple[float, float, float, float]:
+    return (
+        float(record["final_stable_rate"]),
+        float(record["capture_rate"]),
+        float(record["goal_ratio"]),
+        float(record["mean_return"]),
+    )
+
+
+def select_best_record(records: list[dict]) -> dict:
+    candidates = [record for record in records if record["stage"] != "random"]
+    if not candidates:
+        raise ValueError("No trained checkpoints available")
+    return max(candidates, key=checkpoint_rank)
+
+
 def write_metrics_csv(records: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -49,11 +65,13 @@ def _fmt_time(value: float) -> str:
 
 
 def write_summary(records: list[dict], path: Path, algorithm: str, preset: str, seed: int) -> None:
-    best = max(records[1:], key=lambda r: (r["final_stable_rate"], r["capture_rate"], r["mean_return"]))
+    best = select_best_record(records)
     lines = [
         f"# Acrobot Swing-up {algorithm.upper()} training result", "",
         f"- Preset: `{preset}`", f"- Seed: `{seed}`", f"- Best checkpoint: `{best['stage']}`",
-        f"- Best final-stable rate: `{best['final_stable_rate']*100:.1f}%`", "", "## Downward-start evaluation", "",
+        f"- Best final-stable rate: `{best['final_stable_rate']*100:.1f}%`",
+        f"- Best capture rate: `{best['capture_rate']*100:.1f}%`",
+        f"- Best goal-height dwell: `{best['goal_ratio']*100:.1f}%`", "", "## Downward-start evaluation", "",
         "| Stage | Steps | Train time | Return | Capture | Capture time | Final stable | Goal height | RMS torque |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
@@ -66,5 +84,6 @@ def write_summary(records: list[dict], path: Path, algorithm: str, preset: str, 
     lines.extend([
         "", "Capture requires tip height >= 1.0 m with low joint velocity for at least 0.5 s.",
         "Final stable requires that condition for at least 80% of the final 2 s.",
+        "Best checkpoint is selected lexicographically by final stability, capture rate, goal-height dwell, then return.",
     ])
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

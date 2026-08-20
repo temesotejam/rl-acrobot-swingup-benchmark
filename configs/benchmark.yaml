@@ -24,7 +24,7 @@ physics:
   joint2_damping_nm_per_rad_s: 0.02
   motor_time_constant_s: 0.05
   dt_s: 0.02
-  max_episode_s: 20.0
+  max_episode_s: 40.0
   max_velocity_1_rad_s: 12.566370614359172
   max_velocity_2_rad_s: 28.274333882308138
 
@@ -39,8 +39,10 @@ sensor_noise:
   joint2_gyro_noise_std_dps: 0.10
   joint2_gyro_bias_std_dps: 0.30
 
+# Mixed curriculum deliberately keeps easier reset regions alive so a policy
+# cannot solve one region and then catastrophically forget it at the next stage.
 curriculum:
   - {stage: 25_percent, reset_mode: near_upright, fraction: 0.25}
-  - {stage: 50_percent, reset_mode: upper, fraction: 0.50}
-  - {stage: 75_percent, reset_mode: full, fraction: 0.75}
-  - {stage: 100_percent, reset_mode: downward_mix, fraction: 1.00}
+  - {stage: 50_percent, reset_mode: mixed_upper, fraction: 0.50}
+  - {stage: 75_percent, reset_mode: mixed_full, fraction: 0.75}
+  - {stage: 100_percent, reset_mode: mixed_downward, fraction: 1.00}
