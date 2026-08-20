@@ -2,12 +2,18 @@ presets:
   quick:
     total_timesteps: 30000
     evaluation_episodes: 4
+    warmup_timesteps: 7500
+    adaptive_block_timesteps: 7500
   normal:
     total_timesteps: 600000
     evaluation_episodes: 12
+    warmup_timesteps: 100000
+    adaptive_block_timesteps: 50000
   long:
     total_timesteps: 1200000
     evaluation_episodes: 20
+    warmup_timesteps: 150000
+    adaptive_block_timesteps: 75000
 
 physics:
   gravity: 9.8
@@ -39,10 +45,8 @@ sensor_noise:
   joint2_gyro_noise_std_dps: 0.10
   joint2_gyro_bias_std_dps: 0.30
 
-# Mixed curriculum deliberately keeps easier reset regions alive so a policy
-# cannot solve one region and then catastrophically forget it at the next stage.
-curriculum:
-  - {stage: 25_percent, reset_mode: near_upright, fraction: 0.25}
-  - {stage: 50_percent, reset_mode: mixed_upper, fraction: 0.50}
-  - {stage: 75_percent, reset_mode: mixed_full, fraction: 0.75}
-  - {stage: 100_percent, reset_mode: mixed_downward, fraction: 1.00}
+adaptive_curriculum:
+  warmup_reset_mode: near_upright
+  start_level: 0
+  max_blocks_per_level: 3
+  levels: [mixed_upper, mixed_full, mixed_downward]

@@ -37,7 +37,7 @@ jobs:
             test -n "$META"
             SRC="$(dirname "$META")"
             mkdir -p "$DST/$ALGO"
-            cp "$SRC/summary.md" "$SRC/metrics.csv" "$SRC/metadata.json" "$DST/$ALGO/"
+            cp "$SRC/summary.md" "$SRC/metrics.csv" "$SRC/metadata.json" "$SRC/best-checkpoint.json" "$DST/$ALGO/"
           done
           printf '# Benchmark run %s\n\n- conclusion: success\n- workflow run id: %s\n- run URL: %s\n' "$RUN_NUMBER" "$RUN_ID" "$RUN_URL" > "$DST/run-info.md"
           git config user.name "github-actions[bot]"

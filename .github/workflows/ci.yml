@@ -51,8 +51,11 @@ jobs:
         run: |
           test -f "ci-results/${{ matrix.algorithm }}/summary.md"
           test -f "ci-results/${{ matrix.algorithm }}/metrics.csv"
-          test -f "ci-results/${{ matrix.algorithm }}/models/100_percent.zip"
-          test -f "ci-results/${{ matrix.algorithm }}/videos/04_100_percent.mp4"
+          test -f "ci-results/${{ matrix.algorithm }}/best-checkpoint.json"
+          test -f "ci-results/${{ matrix.algorithm }}/models/best.zip"
+          test -f "ci-results/${{ matrix.algorithm }}/models/final.zip"
+          test -f "ci-results/${{ matrix.algorithm }}/videos/best.mp4"
+          test -f "ci-results/${{ matrix.algorithm }}/videos/final.mp4"
       - name: Build dashboard smoke test
         run: |
           python web/build_pages.py --root ci-results --output site --run-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"

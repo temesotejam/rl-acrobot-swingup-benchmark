@@ -5,7 +5,6 @@ import importlib.metadata
 import json
 import math
 import random
-import shutil
 import time
 from pathlib import Path
 
@@ -16,13 +15,14 @@ from stable_baselines3 import PPO, SAC, TD3
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.noise import NormalActionNoise
 
-from .curriculum import make_training_env
+from .curriculum import ADAPTIVE_LEVELS, decide_transition, make_training_env
 from .environment import PhysicsConfig, SensorNoiseConfig
 from .evaluation import evaluate_episode, evaluate_policy
 from .reporting import checkpoint_rank, create_plots, select_best_record, write_metrics_csv, write_summary
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALGORITHMS = {"ppo", "sac", "td3"}
+MODEL_CLASSES = {"ppo": PPO, "sac": SAC, "td3": TD3}
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,14 +59,10 @@ def record_stage(
     training_wall_time_s: float,
     policy,
     evaluation_seeds: list[int],
-    video_seed: int,
-    videos_dir: Path,
-    video_index: int,
     physics: PhysicsConfig,
     noise: SensorNoiseConfig,
 ) -> dict:
     metrics = evaluate_policy(policy, evaluation_seeds, physics=physics, sensor_noise=noise)
-    evaluate_episode(policy, video_seed, physics, noise, videos_dir / f"{video_index:02d}_{stage}.mp4")
     record = {
         "stage": stage,
         "progress": progress,
@@ -77,7 +73,7 @@ def record_stage(
     records.append(record)
     capture_t = "-" if math.isnan(metrics.mean_capture_time_s) else f"{metrics.mean_capture_time_s:.2f}s"
     print(
-        f"[{stage}] steps={timesteps:,} return={metrics.mean_return:.1f} "
+        f"[{stage}] consumed_steps={timesteps:,} return={metrics.mean_return:.1f} "
         f"capture={metrics.capture_rate*100:.1f}% capture_t={capture_t} "
         f"final_stable={metrics.final_stable_rate*100:.1f}% train_wall={training_wall_time_s:.1f}s"
     )
@@ -102,7 +98,7 @@ def make_model(
         )
         n_steps = int(cfg["n_steps_quick"] if preset == "quick" else cfg["n_steps"])
         batch_size = int(cfg["batch_size_quick"] if preset == "quick" else cfg["batch_size"])
-        model = PPO(
+        return PPO(
             "MlpPolicy",
             train_env,
             learning_rate=float(cfg["learning_rate"]),
@@ -120,7 +116,6 @@ def make_model(
             device="cpu",
             verbose=1,
         )
-        return model
 
     train_env = make_training_env(physics=physics, sensor_noise=noise, reset_mode="near_upright")
     common = dict(
@@ -159,17 +154,63 @@ def make_model(
     )
 
 
+def train_for(model, steps: int) -> float:
+    started = time.perf_counter()
+    model.learn(total_timesteps=steps, reset_num_timesteps=False, progress_bar=False, log_interval=20)
+    return time.perf_counter() - started
+
+
+def save_best_state(
+    model,
+    record: dict,
+    output_dir: Path,
+    models_dir: Path,
+    videos_dir: Path,
+    video_seed: int,
+    physics: PhysicsConfig,
+    noise: SensorNoiseConfig,
+) -> None:
+    model.save(models_dir / "best.zip")
+    if hasattr(model, "save_replay_buffer"):
+        model.save_replay_buffer(models_dir / "best-replay.pkl")
+    (output_dir / "best-checkpoint.json").write_text(
+        json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    evaluate_episode(model, video_seed, physics, noise, videos_dir / "best.mp4")
+
+
+def restore_best_state(model, algorithm: str, models_dir: Path):
+    env = model.get_env()
+    restored = MODEL_CLASSES[algorithm].load(models_dir / "best.zip", env=env, device="cpu")
+    replay_path = models_dir / "best-replay.pkl"
+    if replay_path.exists() and hasattr(restored, "load_replay_buffer"):
+        restored.load_replay_buffer(replay_path)
+    return restored
+
+
 def main() -> None:
     args = parse_args()
     benchmark, algorithm_configs = load_configs()
     set_global_seed(args.seed)
     preset_cfg = benchmark["presets"][args.preset]
+    adaptive_cfg = benchmark["adaptive_curriculum"]
     physics = PhysicsConfig(**benchmark["physics"])
     noise = SensorNoiseConfig(**benchmark["sensor_noise"])
+
     total_timesteps = int(preset_cfg["total_timesteps"])
+    warmup_timesteps = int(preset_cfg["warmup_timesteps"])
+    block_timesteps = int(preset_cfg["adaptive_block_timesteps"])
     evaluation_episodes = int(preset_cfg["evaluation_episodes"])
     evaluation_seeds = [args.seed + 100 + i for i in range(evaluation_episodes)]
     video_seed = args.seed + 999
+    max_blocks_per_level = int(adaptive_cfg["max_blocks_per_level"])
+    configured_levels = tuple(str(value) for value in adaptive_cfg["levels"])
+    if configured_levels != ADAPTIVE_LEVELS:
+        raise ValueError(f"Configured levels {configured_levels} do not match {ADAPTIVE_LEVELS}")
+    if not 0 < warmup_timesteps < total_timesteps:
+        raise ValueError("warmup_timesteps must be between zero and total_timesteps")
+    if block_timesteps <= 0:
+        raise ValueError("adaptive_block_timesteps must be positive")
 
     output_dir = args.output_dir.resolve()
     models_dir, videos_dir, plots_dir = output_dir / "models", output_dir / "videos", output_dir / "plots"
@@ -177,50 +218,103 @@ def main() -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
     records: list[dict] = []
-    record_stage(records, "random", 0.0, 0, 0.0, None, evaluation_seeds, video_seed, videos_dir, 0, physics, noise)
+    decisions: list[dict] = []
+    record_stage(records, "random", 0.0, 0, 0.0, None, evaluation_seeds, physics, noise)
     model = make_model(args.algorithm, args.preset, algorithm_configs, physics, noise, args.seed)
 
-    cumulative_target = 0
+    consumed_timesteps = 0
     training_wall_time_s = 0.0
     best_record: dict | None = None
-    last_stage = ""
-    for video_index, item in enumerate(benchmark["curriculum"], start=1):
-        stage = str(item["stage"])
-        mode = str(item["reset_mode"])
-        fraction = float(item["fraction"])
-        target = int(round(total_timesteps * fraction))
-        additional = target - cumulative_target
-        if additional <= 0:
-            raise ValueError("Curriculum fractions must increase strictly")
+
+    warmup_mode = str(adaptive_cfg["warmup_reset_mode"])
+    model.get_env().env_method("set_reset_mode", warmup_mode)
+    model.get_env().reset()
+    print(f"Adaptive warmup reset_mode={warmup_mode} steps={warmup_timesteps:,}")
+    training_wall_time_s += train_for(model, warmup_timesteps)
+    consumed_timesteps += warmup_timesteps
+    warmup_stage = "warmup"
+    model.save(models_dir / f"{warmup_stage}.zip")
+    current = record_stage(
+        records, warmup_stage, consumed_timesteps / total_timesteps, consumed_timesteps,
+        training_wall_time_s, model, evaluation_seeds, physics, noise,
+    )
+    best_record = dict(current)
+    save_best_state(model, best_record, output_dir, models_dir, videos_dir, video_seed, physics, noise)
+    print(
+        f"New best checkpoint={warmup_stage} final_stable={current['final_stable_rate']*100:.1f}% "
+        f"capture={current['capture_rate']*100:.1f}% goal={current['goal_ratio']*100:.1f}%"
+    )
+
+    level = int(adaptive_cfg["start_level"])
+    blocks_at_level = 0
+    block_index = 0
+    while consumed_timesteps < total_timesteps:
+        block_index += 1
+        mode = ADAPTIVE_LEVELS[level]
+        steps = min(block_timesteps, total_timesteps - consumed_timesteps)
         model.get_env().env_method("set_reset_mode", mode)
         model.get_env().reset()
-        print(f"Curriculum stage={stage} reset_mode={mode} additional_steps={additional:,}")
-        started = time.perf_counter()
-        model.learn(total_timesteps=additional, reset_num_timesteps=False, progress_bar=False, log_interval=20)
-        training_wall_time_s += time.perf_counter() - started
-        cumulative_target = target
-        last_stage = stage
-        stage_model_path = models_dir / f"{stage}.zip"
-        model.save(stage_model_path)
-        current = record_stage(
-            records, stage, fraction, int(model.num_timesteps), training_wall_time_s, model,
-            evaluation_seeds, video_seed, videos_dir, video_index, physics, noise,
+        print(
+            f"Adaptive block={block_index} level={level} reset_mode={mode} "
+            f"steps={steps:,} consumed_before={consumed_timesteps:,}"
         )
-        if best_record is None or checkpoint_rank(current) > checkpoint_rank(best_record):
+        training_wall_time_s += train_for(model, steps)
+        consumed_timesteps += steps
+        blocks_at_level += 1
+        stage = f"block_{block_index:02d}_{mode}"
+        stage_path = models_dir / f"{stage}.zip"
+        model.save(stage_path)
+
+        best_before_block = dict(best_record) if best_record is not None else None
+        current = record_stage(
+            records, stage, consumed_timesteps / total_timesteps, consumed_timesteps,
+            training_wall_time_s, model, evaluation_seeds, physics, noise,
+        )
+        improved = best_record is None or checkpoint_rank(current) > checkpoint_rank(best_record)
+        if improved:
             best_record = dict(current)
-            shutil.copy2(stage_model_path, models_dir / "best.zip")
-            (output_dir / "best-checkpoint.json").write_text(
-                json.dumps(best_record, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
+            save_best_state(model, best_record, output_dir, models_dir, videos_dir, video_seed, physics, noise)
             print(
                 f"New best checkpoint={stage} final_stable={current['final_stable_rate']*100:.1f}% "
                 f"capture={current['capture_rate']*100:.1f}% goal={current['goal_ratio']*100:.1f}%"
             )
 
+        decision = decide_transition(
+            current=current,
+            best_before_block=best_before_block,
+            level=level,
+            blocks_at_level=blocks_at_level,
+            max_blocks_per_level=max_blocks_per_level,
+        )
+        decisions.append(
+            {
+                "stage": stage,
+                "consumed_timesteps": consumed_timesteps,
+                "level_before": level,
+                "reset_mode": mode,
+                "action": decision.action,
+                "next_level": decision.next_level,
+                "reason": decision.reason,
+                "best_stage_after_block": None if best_record is None else best_record["stage"],
+            }
+        )
+        print(
+            f"Adaptive decision={decision.action} level={level}->{decision.next_level} "
+            f"reason={decision.reason}"
+        )
+        if decision.action == "rollback":
+            model = restore_best_state(model, args.algorithm, models_dir)
+            print(f"Restored best checkpoint={best_record['stage'] if best_record else 'unknown'}")
+            blocks_at_level = 0
+        elif decision.action == "advance":
+            blocks_at_level = 0
+        level = decision.next_level
+
+    model.save(models_dir / "final.zip")
+    evaluate_episode(model, video_seed, physics, noise, videos_dir / "final.mp4")
+    model_internal_timesteps = int(model.num_timesteps)
     model.get_env().close()
-    if not last_stage:
-        raise RuntimeError("No curriculum stage completed")
-    shutil.copy2(models_dir / f"{last_stage}.zip", models_dir / "final.zip")
+
     best_record = select_best_record(records)
     write_metrics_csv(records, output_dir / "metrics.csv")
     create_plots(records, plots_dir)
@@ -231,13 +325,15 @@ def main() -> None:
         "preset": args.preset,
         "seed": args.seed,
         "requested_total_timesteps": total_timesteps,
-        "actual_final_timesteps": int(model.num_timesteps),
+        "consumed_total_timesteps": consumed_timesteps,
+        "model_internal_timesteps": model_internal_timesteps,
         "training_wall_time_s": training_wall_time_s,
         "evaluation_seeds": evaluation_seeds,
         "video_seed": video_seed,
         "physics": physics.to_dict(),
         "sensor_noise": noise.to_dict(),
-        "curriculum": benchmark["curriculum"],
+        "adaptive_curriculum": adaptive_cfg,
+        "adaptive_decisions": decisions,
         "best_checkpoint": best_record,
         "algorithm_config": algorithm_configs[args.algorithm],
         "versions": version_info(),
