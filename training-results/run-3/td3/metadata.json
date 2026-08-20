@@ -1,0 +1,117 @@
+{
+  "environment": "continuous-acrobot-swingup",
+  "algorithm": "td3",
+  "preset": "normal",
+  "seed": 42,
+  "requested_total_timesteps": 600000,
+  "actual_final_timesteps": 600000,
+  "training_wall_time_s": 3867.538165443,
+  "evaluation_seeds": [
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150,
+    151,
+    152,
+    153
+  ],
+  "video_seed": 1041,
+  "physics": {
+    "gravity": 9.8,
+    "link_length_1_m": 1.0,
+    "link_length_2_m": 1.0,
+    "link_mass_1_kg": 1.0,
+    "link_mass_2_kg": 1.0,
+    "link_com_1_m": 0.5,
+    "link_com_2_m": 0.5,
+    "link_moi_1_kg_m2": 1.0,
+    "link_moi_2_kg_m2": 1.0,
+    "max_torque_nm": 1.0,
+    "joint1_damping_nm_per_rad_s": 0.02,
+    "joint2_damping_nm_per_rad_s": 0.02,
+    "motor_time_constant_s": 0.05,
+    "dt_s": 0.02,
+    "max_episode_s": 40.0,
+    "max_velocity_1_rad_s": 12.566370614359172,
+    "max_velocity_2_rad_s": 28.274333882308138
+  },
+  "sensor_noise": {
+    "enabled": true,
+    "joint1_angle_noise_std_deg": 0.25,
+    "joint1_angle_bias_std_deg": 1.0,
+    "joint2_angle_noise_std_deg": 0.25,
+    "joint2_angle_bias_std_deg": 1.0,
+    "joint1_gyro_noise_std_dps": 0.1,
+    "joint1_gyro_bias_std_dps": 0.3,
+    "joint2_gyro_noise_std_dps": 0.1,
+    "joint2_gyro_bias_std_dps": 0.3
+  },
+  "curriculum": [
+    {
+      "stage": "25_percent",
+      "reset_mode": "near_upright",
+      "fraction": 0.25
+    },
+    {
+      "stage": "50_percent",
+      "reset_mode": "mixed_upper",
+      "fraction": 0.5
+    },
+    {
+      "stage": "75_percent",
+      "reset_mode": "mixed_full",
+      "fraction": 0.75
+    },
+    {
+      "stage": "100_percent",
+      "reset_mode": "mixed_downward",
+      "fraction": 1.0
+    }
+  ],
+  "best_checkpoint": {
+    "stage": "50_percent",
+    "progress": 0.5,
+    "timesteps": 300000,
+    "training_wall_time_s": 1893.7026710029998,
+    "mean_return": 113.05908992824767,
+    "std_return": 3.379215778682771,
+    "mean_survival_s": 40.0,
+    "capture_rate": 0.0,
+    "mean_capture_time_s": NaN,
+    "final_stable_rate": 0.0,
+    "goal_ratio": 0.0,
+    "high_ratio": 0.0,
+    "max_tip_height_m": -1.8976321133296723,
+    "rms_joint_speed_rad_s": 0.2506273848152065,
+    "rms_torque_nm": 0.9991870387113407
+  },
+  "algorithm_config": {
+    "learning_rate": 0.001,
+    "buffer_size": 800000,
+    "learning_starts": 5000,
+    "batch_size": 256,
+    "tau": 0.005,
+    "gamma": 0.99,
+    "train_freq": 1,
+    "gradient_steps": 1,
+    "action_noise_sigma": 0.2,
+    "policy_delay": 2,
+    "target_policy_noise": 0.2,
+    "target_noise_clip": 0.5,
+    "net_arch": [
+      256,
+      256
+    ]
+  },
+  "versions": {
+    "gymnasium": "1.3.0",
+    "stable-baselines3": "2.9.0",
+    "torch": "2.8.0+cpu",
+    "numpy": "2.4.6"
+  }
+}
