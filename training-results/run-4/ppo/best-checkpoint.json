@@ -1,0 +1,17 @@
+{
+  "stage": "block_09_mixed_downward",
+  "progress": 0.9166666666666666,
+  "timesteps": 550000,
+  "training_wall_time_s": 170.392488002,
+  "mean_return": 975.034574920833,
+  "std_return": 274.0140705926032,
+  "mean_survival_s": 40.0,
+  "capture_rate": 0.16666666666666666,
+  "mean_capture_time_s": 27.090000000000003,
+  "final_stable_rate": 0.0,
+  "goal_ratio": 0.10183333333333335,
+  "high_ratio": 0.041333333333333326,
+  "max_tip_height_m": 1.64598991199608,
+  "rms_joint_speed_rad_s": 4.074811888777531,
+  "rms_torque_nm": 0.9403742904375298
+}

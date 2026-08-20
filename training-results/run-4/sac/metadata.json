@@ -1,0 +1,206 @@
+{
+  "environment": "continuous-acrobot-swingup",
+  "algorithm": "sac",
+  "preset": "normal",
+  "seed": 42,
+  "requested_total_timesteps": 600000,
+  "consumed_total_timesteps": 600000,
+  "model_internal_timesteps": 150000,
+  "training_wall_time_s": 5747.2939188870005,
+  "evaluation_seeds": [
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150,
+    151,
+    152,
+    153
+  ],
+  "video_seed": 1041,
+  "physics": {
+    "gravity": 9.8,
+    "link_length_1_m": 1.0,
+    "link_length_2_m": 1.0,
+    "link_mass_1_kg": 1.0,
+    "link_mass_2_kg": 1.0,
+    "link_com_1_m": 0.5,
+    "link_com_2_m": 0.5,
+    "link_moi_1_kg_m2": 1.0,
+    "link_moi_2_kg_m2": 1.0,
+    "max_torque_nm": 1.0,
+    "joint1_damping_nm_per_rad_s": 0.02,
+    "joint2_damping_nm_per_rad_s": 0.02,
+    "motor_time_constant_s": 0.05,
+    "dt_s": 0.02,
+    "max_episode_s": 40.0,
+    "max_velocity_1_rad_s": 12.566370614359172,
+    "max_velocity_2_rad_s": 28.274333882308138
+  },
+  "sensor_noise": {
+    "enabled": true,
+    "joint1_angle_noise_std_deg": 0.25,
+    "joint1_angle_bias_std_deg": 1.0,
+    "joint2_angle_noise_std_deg": 0.25,
+    "joint2_angle_bias_std_deg": 1.0,
+    "joint1_gyro_noise_std_dps": 0.1,
+    "joint1_gyro_bias_std_dps": 0.3,
+    "joint2_gyro_noise_std_dps": 0.1,
+    "joint2_gyro_bias_std_dps": 0.3
+  },
+  "adaptive_curriculum": {
+    "warmup_reset_mode": "near_upright",
+    "start_level": 0,
+    "max_blocks_per_level": 3,
+    "levels": [
+      "mixed_upper",
+      "mixed_full",
+      "mixed_downward"
+    ]
+  },
+  "adaptive_decisions": [
+    {
+      "stage": "block_01_mixed_upper",
+      "consumed_timesteps": 150000,
+      "level_before": 0,
+      "reset_mode": "mixed_upper",
+      "action": "advance",
+      "next_level": 1,
+      "reason": "downward evaluation met the advancement gate",
+      "best_stage_after_block": "block_01_mixed_upper"
+    },
+    {
+      "stage": "block_02_mixed_full",
+      "consumed_timesteps": 200000,
+      "level_before": 1,
+      "reset_mode": "mixed_full",
+      "action": "rollback",
+      "next_level": 0,
+      "reason": "downward evaluation regressed relative to the retained best checkpoint",
+      "best_stage_after_block": "block_01_mixed_upper"
+    },
+    {
+      "stage": "block_03_mixed_upper",
+      "consumed_timesteps": 250000,
+      "level_before": 0,
+      "reset_mode": "mixed_upper",
+      "action": "advance",
+      "next_level": 1,
+      "reason": "downward evaluation met the advancement gate",
+      "best_stage_after_block": "block_01_mixed_upper"
+    },
+    {
+      "stage": "block_04_mixed_full",
+      "consumed_timesteps": 300000,
+      "level_before": 1,
+      "reset_mode": "mixed_full",
+      "action": "rollback",
+      "next_level": 0,
+      "reason": "downward evaluation regressed relative to the retained best checkpoint",
+      "best_stage_after_block": "block_01_mixed_upper"
+    },
+    {
+      "stage": "block_05_mixed_upper",
+      "consumed_timesteps": 350000,
+      "level_before": 0,
+      "reset_mode": "mixed_upper",
+      "action": "advance",
+      "next_level": 1,
+      "reason": "downward evaluation met the advancement gate",
+      "best_stage_after_block": "block_01_mixed_upper"
+    },
+    {
+      "stage": "block_06_mixed_full",
+      "consumed_timesteps": 400000,
+      "level_before": 1,
+      "reset_mode": "mixed_full",
+      "action": "rollback",
+      "next_level": 0,
+      "reason": "downward evaluation regressed relative to the retained best checkpoint",
+      "best_stage_after_block": "block_01_mixed_upper"
+    },
+    {
+      "stage": "block_07_mixed_upper",
+      "consumed_timesteps": 450000,
+      "level_before": 0,
+      "reset_mode": "mixed_upper",
+      "action": "advance",
+      "next_level": 1,
+      "reason": "downward evaluation met the advancement gate",
+      "best_stage_after_block": "block_01_mixed_upper"
+    },
+    {
+      "stage": "block_08_mixed_full",
+      "consumed_timesteps": 500000,
+      "level_before": 1,
+      "reset_mode": "mixed_full",
+      "action": "rollback",
+      "next_level": 0,
+      "reason": "downward evaluation regressed relative to the retained best checkpoint",
+      "best_stage_after_block": "block_01_mixed_upper"
+    },
+    {
+      "stage": "block_09_mixed_upper",
+      "consumed_timesteps": 550000,
+      "level_before": 0,
+      "reset_mode": "mixed_upper",
+      "action": "advance",
+      "next_level": 1,
+      "reason": "downward evaluation met the advancement gate",
+      "best_stage_after_block": "block_01_mixed_upper"
+    },
+    {
+      "stage": "block_10_mixed_full",
+      "consumed_timesteps": 600000,
+      "level_before": 1,
+      "reset_mode": "mixed_full",
+      "action": "rollback",
+      "next_level": 0,
+      "reason": "downward evaluation regressed relative to the retained best checkpoint",
+      "best_stage_after_block": "block_01_mixed_upper"
+    }
+  ],
+  "best_checkpoint": {
+    "stage": "block_01_mixed_upper",
+    "progress": 0.25,
+    "timesteps": 150000,
+    "training_wall_time_s": 1378.957904031,
+    "mean_return": 1076.086779959651,
+    "std_return": 85.19032386370586,
+    "mean_survival_s": 40.0,
+    "capture_rate": 0.5833333333333334,
+    "mean_capture_time_s": 30.754285714285714,
+    "final_stable_rate": 0.0,
+    "goal_ratio": 0.12470833333333335,
+    "high_ratio": 0.046625,
+    "max_tip_height_m": 1.847822131197945,
+    "rms_joint_speed_rad_s": 3.1887954194442503,
+    "rms_torque_nm": 0.8117657061482678
+  },
+  "algorithm_config": {
+    "learning_rate": 0.0003,
+    "buffer_size": 800000,
+    "learning_starts": 5000,
+    "batch_size": 256,
+    "tau": 0.005,
+    "gamma": 0.99,
+    "train_freq": 1,
+    "gradient_steps": 1,
+    "ent_coef": "auto",
+    "target_update_interval": 1,
+    "net_arch": [
+      256,
+      256
+    ]
+  },
+  "versions": {
+    "gymnasium": "1.3.0",
+    "stable-baselines3": "2.9.0",
+    "torch": "2.8.0+cpu",
+    "numpy": "2.4.6"
+  }
+}
