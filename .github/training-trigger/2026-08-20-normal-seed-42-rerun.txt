@@ -1,0 +1,4 @@
+preset=normal
+seed=42
+algorithms=ppo,sac,td3
+reason=rerun after workflow became available on main
