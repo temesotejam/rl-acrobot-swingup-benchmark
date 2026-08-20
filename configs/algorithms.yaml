@@ -1,0 +1,43 @@
+ppo:
+  learning_rate: 0.0003
+  n_envs: 4
+  n_steps: 750
+  n_steps_quick: 375
+  batch_size: 300
+  batch_size_quick: 250
+  n_epochs: 10
+  gamma: 0.995
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.005
+  use_sde: true
+  sde_sample_freq: 4
+  net_arch: [128, 128]
+
+sac:
+  learning_rate: 0.0003
+  buffer_size: 800000
+  learning_starts: 5000
+  batch_size: 256
+  tau: 0.005
+  gamma: 0.99
+  train_freq: 1
+  gradient_steps: 1
+  ent_coef: auto
+  target_update_interval: 1
+  net_arch: [256, 256]
+
+td3:
+  learning_rate: 0.001
+  buffer_size: 800000
+  learning_starts: 5000
+  batch_size: 256
+  tau: 0.005
+  gamma: 0.99
+  train_freq: 1
+  gradient_steps: 1
+  action_noise_sigma: 0.20
+  policy_delay: 2
+  target_policy_noise: 0.20
+  target_noise_clip: 0.50
+  net_arch: [256, 256]

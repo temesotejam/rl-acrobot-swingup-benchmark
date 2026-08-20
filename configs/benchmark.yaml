@@ -1,0 +1,46 @@
+presets:
+  quick:
+    total_timesteps: 30000
+    evaluation_episodes: 4
+  normal:
+    total_timesteps: 600000
+    evaluation_episodes: 12
+  long:
+    total_timesteps: 1200000
+    evaluation_episodes: 20
+
+physics:
+  gravity: 9.8
+  link_length_1_m: 1.0
+  link_length_2_m: 1.0
+  link_mass_1_kg: 1.0
+  link_mass_2_kg: 1.0
+  link_com_1_m: 0.5
+  link_com_2_m: 0.5
+  link_moi_1_kg_m2: 1.0
+  link_moi_2_kg_m2: 1.0
+  max_torque_nm: 1.0
+  joint1_damping_nm_per_rad_s: 0.02
+  joint2_damping_nm_per_rad_s: 0.02
+  motor_time_constant_s: 0.05
+  dt_s: 0.02
+  max_episode_s: 20.0
+  max_velocity_1_rad_s: 12.566370614359172
+  max_velocity_2_rad_s: 28.274333882308138
+
+sensor_noise:
+  enabled: true
+  joint1_angle_noise_std_deg: 0.25
+  joint1_angle_bias_std_deg: 1.0
+  joint2_angle_noise_std_deg: 0.25
+  joint2_angle_bias_std_deg: 1.0
+  joint1_gyro_noise_std_dps: 0.10
+  joint1_gyro_bias_std_dps: 0.30
+  joint2_gyro_noise_std_dps: 0.10
+  joint2_gyro_bias_std_dps: 0.30
+
+curriculum:
+  - {stage: 25_percent, reset_mode: near_upright, fraction: 0.25}
+  - {stage: 50_percent, reset_mode: upper, fraction: 0.50}
+  - {stage: 75_percent, reset_mode: full, fraction: 0.75}
+  - {stage: 100_percent, reset_mode: downward_mix, fraction: 1.00}
