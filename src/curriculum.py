@@ -52,22 +52,29 @@ def mixture_for_difficulty(difficulty: float) -> tuple[tuple[str, float], ...]:
     )
 
 
-def readiness_thresholds(difficulty: float) -> tuple[float, float]:
+def readiness_thresholds(difficulty: float) -> tuple[float, float, float]:
     """Increase the evidence required as the reset distribution gets harder."""
     difficulty = float(np.clip(difficulty, 0.0, 1.0))
     capture_threshold = 0.10 + 0.25 * difficulty
     goal_threshold = 0.05 + 0.07 * difficulty
-    return capture_threshold, goal_threshold
+    stable_dwell_threshold = 0.01 + 0.04 * difficulty
+    return capture_threshold, goal_threshold, stable_dwell_threshold
 
 
 def ready_to_advance(record: dict, difficulty: float) -> bool:
     capture = float(record["capture_rate"])
     goal = float(record["goal_ratio"])
     stable = float(record["final_stable_rate"])
+    stable_dwell = float(record.get("stable_ratio", 0.0))
     if stable > 0.0:
         return True
-    capture_threshold, goal_threshold = readiness_thresholds(difficulty)
-    return capture >= capture_threshold or goal >= goal_threshold
+    capture_threshold, goal_threshold, stable_dwell_threshold = readiness_thresholds(difficulty)
+    # v5 could advance on goal-height dwell alone even when no evaluation
+    # episode had actually captured the target.  Require a demonstrated
+    # capture plus either useful dwell above the target or stable dwell.
+    return capture >= capture_threshold and (
+        goal >= goal_threshold or stable_dwell >= stable_dwell_threshold
+    )
 
 
 def severe_regression(current: dict, best: dict | None) -> bool:
@@ -77,13 +84,17 @@ def severe_regression(current: dict, best: dict | None) -> bool:
     current_stable = float(current["final_stable_rate"])
     current_capture = float(current["capture_rate"])
     current_goal = float(current["goal_ratio"])
+    current_stable_dwell = float(current.get("stable_ratio", 0.0))
     best_stable = float(best["final_stable_rate"])
     best_capture = float(best["capture_rate"])
     best_goal = float(best["goal_ratio"])
+    best_stable_dwell = float(best.get("stable_ratio", 0.0))
 
     if best_stable >= 0.10 and current_stable < 0.50 * best_stable:
         return True
     if best_capture >= 0.10 and current_capture < 0.50 * best_capture:
+        return True
+    if best_stable_dwell >= 0.02 and current_stable_dwell < 0.40 * best_stable_dwell:
         return True
     if best_goal >= 0.05 and current_goal < 0.50 * best_goal:
         return True
