@@ -57,7 +57,9 @@ jobs:
           test -f "ci-results/${{ matrix.algorithm }}/models/final.zip"
           test -f "ci-results/${{ matrix.algorithm }}/videos/best.mp4"
           test -f "ci-results/${{ matrix.algorithm }}/videos/final.mp4"
+          test -f "ci-results/${{ matrix.algorithm }}/plots/stable_ratio.png"
           grep -q '^final_model,' "ci-results/${{ matrix.algorithm }}/metrics.csv"
+          head -1 "ci-results/${{ matrix.algorithm }}/metrics.csv" | grep -q 'stable_ratio'
           python - <<'PY'
           import json, os
           from pathlib import Path
@@ -65,6 +67,18 @@ jobs:
           metadata = json.loads(Path(f"ci-results/{algorithm}/metadata.json").read_text())
           assert metadata["final_checkpoint"]["stage"] == "final_model"
           assert 0.0 <= float(metadata["final_model_difficulty"]) <= 1.0
+          assert metadata["reward"]["version"] == "v6-continuous-stability"
+          assert "stable_ratio" in metadata["final_checkpoint"]
+          assert "rollback_count" in metadata
+          assert float(metadata["final_learning_rate"]) > 0.0
+          cfg = metadata["algorithm_config"]
+          if algorithm in {"sac", "td3"}:
+              assert cfg["restore_replay_buffer_on_rollback"] is False
+              assert int(cfg["recovery_refill_steps"]) > 0
+              assert float(cfg["rollback_learning_rate_factor"]) < 1.0
+          if algorithm == "td3":
+              assert abs(float(cfg["learning_rate"]) - 0.0003) < 1e-12
+              assert int(cfg["train_freq"]) == 2
           PY
         env:
           ALGORITHM: ${{ matrix.algorithm }}
@@ -75,6 +89,7 @@ jobs:
           test -f "site/${{ matrix.algorithm }}/videos/best.mp4"
           test -f "site/${{ matrix.algorithm }}/videos/final.mp4"
           grep -q '実際に保存された final model' site/index.html
+          grep -q 'Stable dwell' site/index.html
       - uses: actions/upload-artifact@v7
         with:
           name: acrobot-${{ matrix.algorithm }}-smoke-${{ github.run_number }}
