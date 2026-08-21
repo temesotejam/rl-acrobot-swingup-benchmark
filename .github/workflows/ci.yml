@@ -60,6 +60,8 @@ jobs:
         run: |
           python web/build_pages.py --root ci-results --output site --run-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           test -f site/index.html
+          test -f "site/${{ matrix.algorithm }}/videos/best.mp4"
+          test -f "site/${{ matrix.algorithm }}/videos/final.mp4"
       - uses: actions/upload-artifact@v7
         with:
           name: acrobot-${{ matrix.algorithm }}-smoke-${{ github.run_number }}
