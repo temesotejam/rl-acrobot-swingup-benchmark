@@ -1,0 +1,19 @@
+{
+  "stage": "warmup",
+  "progress": 0.16666666666666666,
+  "timesteps": 100000,
+  "training_wall_time_s": 29.764828475,
+  "difficulty": 0.0,
+  "mean_return": 863.4689591012452,
+  "std_return": 138.51342937390987,
+  "mean_survival_s": 40.0,
+  "capture_rate": 0.0,
+  "mean_capture_time_s": NaN,
+  "final_stable_rate": 0.0,
+  "stable_ratio": 0.002625,
+  "goal_ratio": 0.07516666666666666,
+  "high_ratio": 0.029374999999999995,
+  "max_tip_height_m": 1.89988072200012,
+  "rms_joint_speed_rad_s": 4.885047683925261,
+  "rms_torque_nm": 0.8331647447033625
+}
