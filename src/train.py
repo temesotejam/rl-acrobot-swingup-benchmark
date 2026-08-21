@@ -15,7 +15,7 @@ from stable_baselines3 import PPO, SAC, TD3
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.noise import NormalActionNoise
 
-from .curriculum import ADAPTIVE_LEVELS, decide_transition, make_training_env, ready_to_advance
+from .curriculum import decide_difficulty, make_training_env, ready_to_advance
 from .environment import PhysicsConfig, SensorNoiseConfig
 from .evaluation import evaluate_episode, evaluate_policy
 from .reporting import checkpoint_rank, create_plots, select_best_record, write_metrics_csv, write_summary
@@ -57,6 +57,7 @@ def record_stage(
     progress: float,
     timesteps: int,
     training_wall_time_s: float,
+    difficulty: float,
     policy,
     evaluation_seeds: list[int],
     physics: PhysicsConfig,
@@ -68,12 +69,13 @@ def record_stage(
         "progress": progress,
         "timesteps": timesteps,
         "training_wall_time_s": training_wall_time_s,
+        "difficulty": float(difficulty),
         **metrics.to_dict(),
     }
     records.append(record)
     capture_t = "-" if math.isnan(metrics.mean_capture_time_s) else f"{metrics.mean_capture_time_s:.2f}s"
     print(
-        f"[{stage}] consumed_steps={timesteps:,} return={metrics.mean_return:.1f} "
+        f"[{stage}] consumed_steps={timesteps:,} difficulty={difficulty:.3f} return={metrics.mean_return:.1f} "
         f"capture={metrics.capture_rate*100:.1f}% capture_t={capture_t} "
         f"final_stable={metrics.final_stable_rate*100:.1f}% train_wall={training_wall_time_s:.1f}s"
     )
@@ -203,17 +205,26 @@ def main() -> None:
     evaluation_episodes = int(preset_cfg["evaluation_episodes"])
     evaluation_seeds = [args.seed + 100 + i for i in range(evaluation_episodes)]
     video_seed = args.seed + 999
-    max_blocks_per_level = int(adaptive_cfg["max_blocks_per_level"])
+
+    initial_difficulty = float(adaptive_cfg["initial_difficulty"])
+    initial_step = float(adaptive_cfg["initial_difficulty_step"])
+    min_step = float(adaptive_cfg["min_difficulty_step"])
+    regression_step_shrink = float(adaptive_cfg["regression_step_shrink"])
+    max_blocks_at_difficulty = int(adaptive_cfg["max_blocks_at_difficulty"])
     required_advance_streak = int(adaptive_cfg["advance_confirmation_blocks"])
-    configured_levels = tuple(str(value) for value in adaptive_cfg["levels"])
-    if configured_levels != ADAPTIVE_LEVELS:
-        raise ValueError(f"Configured levels {configured_levels} do not match {ADAPTIVE_LEVELS}")
+
     if not 0 < warmup_timesteps < total_timesteps:
         raise ValueError("warmup_timesteps must be between zero and total_timesteps")
     if block_timesteps <= 0:
         raise ValueError("adaptive_block_timesteps must be positive")
-    if required_advance_streak <= 0:
-        raise ValueError("advance_confirmation_blocks must be positive")
+    if not 0.0 <= initial_difficulty <= 1.0:
+        raise ValueError("initial_difficulty must be in [0, 1]")
+    if initial_step <= 0.0 or min_step <= 0.0 or min_step > initial_step:
+        raise ValueError("difficulty steps must be positive and min <= initial")
+    if not 0.0 < regression_step_shrink <= 1.0:
+        raise ValueError("regression_step_shrink must be in (0, 1]")
+    if max_blocks_at_difficulty <= 0 or required_advance_streak <= 0:
+        raise ValueError("adaptive block counts must be positive")
 
     output_dir = args.output_dir.resolve()
     models_dir, videos_dir, plots_dir = output_dir / "models", output_dir / "videos", output_dir / "plots"
@@ -222,7 +233,7 @@ def main() -> None:
 
     records: list[dict] = []
     decisions: list[dict] = []
-    record_stage(records, "random", 0.0, 0, 0.0, None, evaluation_seeds, physics, noise)
+    record_stage(records, "random", 0.0, 0, 0.0, 0.0, None, evaluation_seeds, physics, noise)
     model = make_model(args.algorithm, args.preset, algorithm_configs, physics, noise, args.seed)
 
     consumed_timesteps = 0
@@ -236,95 +247,115 @@ def main() -> None:
     training_wall_time_s += train_for(model, warmup_timesteps)
     consumed_timesteps += warmup_timesteps
     warmup_stage = "warmup"
-    model.save(models_dir / f"{warmup_stage}.zip")
     current = record_stage(
         records, warmup_stage, consumed_timesteps / total_timesteps, consumed_timesteps,
-        training_wall_time_s, model, evaluation_seeds, physics, noise,
+        training_wall_time_s, initial_difficulty, model, evaluation_seeds, physics, noise,
     )
     best_record = dict(current)
     save_best_state(model, best_record, output_dir, models_dir, videos_dir, video_seed, physics, noise)
     print(
-        f"New best checkpoint={warmup_stage} final_stable={current['final_stable_rate']*100:.1f}% "
+        f"New best checkpoint={warmup_stage} difficulty={initial_difficulty:.3f} "
         f"capture={current['capture_rate']*100:.1f}% goal={current['goal_ratio']*100:.1f}%"
     )
 
-    level = int(adaptive_cfg["start_level"])
-    blocks_at_level = 0
+    difficulty = initial_difficulty
+    difficulty_step = initial_step
+    model_difficulty = initial_difficulty
+    blocks_at_difficulty = 0
     advance_streak = 0
     block_index = 0
+
     while consumed_timesteps < total_timesteps:
         block_index += 1
-        mode = ADAPTIVE_LEVELS[level]
+        training_difficulty = difficulty
         steps = min(block_timesteps, total_timesteps - consumed_timesteps)
-        model.get_env().env_method("set_reset_mode", mode)
+        model.get_env().env_method("set_difficulty", training_difficulty)
         model.get_env().reset()
         print(
-            f"Adaptive block={block_index} level={level} reset_mode={mode} "
+            f"Adaptive block={block_index} difficulty={training_difficulty:.3f} step={difficulty_step:.3f} "
             f"steps={steps:,} consumed_before={consumed_timesteps:,}"
         )
         training_wall_time_s += train_for(model, steps)
         consumed_timesteps += steps
-        blocks_at_level += 1
-        stage = f"block_{block_index:02d}_{mode}"
-        stage_path = models_dir / f"{stage}.zip"
-        model.save(stage_path)
+        blocks_at_difficulty += 1
+        model_difficulty = training_difficulty
+        stage = f"block_{block_index:02d}_d{training_difficulty:.3f}".replace(".", "p")
 
         best_before_block = dict(best_record) if best_record is not None else None
         current = record_stage(
             records, stage, consumed_timesteps / total_timesteps, consumed_timesteps,
-            training_wall_time_s, model, evaluation_seeds, physics, noise,
+            training_wall_time_s, training_difficulty, model, evaluation_seeds, physics, noise,
         )
         improved = best_record is None or checkpoint_rank(current) > checkpoint_rank(best_record)
         if improved:
             best_record = dict(current)
             save_best_state(model, best_record, output_dir, models_dir, videos_dir, video_seed, physics, noise)
             print(
-                f"New best checkpoint={stage} final_stable={current['final_stable_rate']*100:.1f}% "
+                f"New best checkpoint={stage} difficulty={training_difficulty:.3f} "
                 f"capture={current['capture_rate']*100:.1f}% goal={current['goal_ratio']*100:.1f}%"
             )
 
-        if ready_to_advance(current, level):
+        if ready_to_advance(current, training_difficulty):
             advance_streak += 1
         else:
             advance_streak = 0
 
-        decision = decide_transition(
+        decision = decide_difficulty(
             current=current,
             best_before_block=best_before_block,
-            level=level,
-            blocks_at_level=blocks_at_level,
-            max_blocks_per_level=max_blocks_per_level,
+            difficulty=training_difficulty,
+            difficulty_step=difficulty_step,
+            blocks_at_difficulty=blocks_at_difficulty,
+            max_blocks_at_difficulty=max_blocks_at_difficulty,
             advance_streak=advance_streak,
             required_advance_streak=required_advance_streak,
+            min_difficulty_step=min_step,
+            regression_step_shrink=regression_step_shrink,
         )
         decisions.append(
             {
                 "stage": stage,
                 "consumed_timesteps": consumed_timesteps,
-                "level_before": level,
-                "reset_mode": mode,
+                "difficulty_before": training_difficulty,
+                "difficulty_step_before": difficulty_step,
                 "action": decision.action,
-                "next_level": decision.next_level,
+                "next_difficulty": decision.next_difficulty,
+                "next_difficulty_step": decision.next_step,
                 "reason": decision.reason,
                 "advance_streak": advance_streak,
                 "best_stage_after_block": None if best_record is None else best_record["stage"],
+                "best_difficulty_after_block": None if best_record is None else best_record["difficulty"],
             }
         )
         print(
-            f"Adaptive decision={decision.action} level={level}->{decision.next_level} "
+            f"Adaptive decision={decision.action} difficulty={training_difficulty:.3f}->{decision.next_difficulty:.3f} "
+            f"step={difficulty_step:.3f}->{decision.next_step:.3f} "
             f"advance_streak={advance_streak}/{required_advance_streak} reason={decision.reason}"
         )
+
         if decision.action == "rollback":
             model = restore_best_state(model, args.algorithm, models_dir)
-            print(f"Restored best checkpoint={best_record['stage'] if best_record else 'unknown'}")
-            blocks_at_level = 0
+            model_difficulty = float(best_record["difficulty"] if best_record is not None else 0.0)
+            print(
+                f"Restored best checkpoint={best_record['stage'] if best_record else 'unknown'} "
+                f"difficulty={model_difficulty:.3f}"
+            )
+            blocks_at_difficulty = 0
             advance_streak = 0
-        elif decision.action == "advance":
-            blocks_at_level = 0
+        elif decision.action in {"advance", "probe"}:
+            blocks_at_difficulty = 0
             advance_streak = 0
-        level = decision.next_level
 
+        difficulty = decision.next_difficulty
+        difficulty_step = decision.next_step
+
+    # Save and freshly evaluate the model that is actually delivered after any
+    # last-block rollback.  This keeps Pages metrics aligned with final.mp4.
     model.save(models_dir / "final.zip")
+    final_record = record_stage(
+        records, "final_model", 1.0, consumed_timesteps, training_wall_time_s,
+        model_difficulty, model, evaluation_seeds, physics, noise,
+    )
     evaluate_episode(model, video_seed, physics, noise, videos_dir / "final.mp4")
     model_internal_timesteps = int(model.num_timesteps)
     model.get_env().close()
@@ -348,7 +379,11 @@ def main() -> None:
         "sensor_noise": noise.to_dict(),
         "adaptive_curriculum": adaptive_cfg,
         "adaptive_decisions": decisions,
+        "next_planned_difficulty": difficulty,
+        "final_model_difficulty": model_difficulty,
+        "final_difficulty_step": difficulty_step,
         "best_checkpoint": best_record,
+        "final_checkpoint": final_record,
         "algorithm_config": algorithm_configs[args.algorithm],
         "versions": version_info(),
     }
