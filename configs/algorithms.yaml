@@ -1,9 +1,9 @@
 ppo:
   learning_rate: 0.0003
   n_envs: 4
-  n_steps: 750
+  n_steps: 625
   n_steps_quick: 375
-  batch_size: 300
+  batch_size: 250
   batch_size_quick: 250
   n_epochs: 10
   gamma: 0.995
