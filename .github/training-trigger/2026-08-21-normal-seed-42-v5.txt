@@ -1,0 +1,4 @@
+preset=normal
+seed=42
+algorithms=ppo,sac,td3
+reason=continuous adaptive curriculum v5 with rollback step refinement and final-model reevaluation
