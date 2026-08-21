@@ -53,9 +53,10 @@ jobs:
         run: |
           python web/build_pages.py --root downloaded --output site --run-url "${{ steps.source.outputs.run_url }}"
           test -f site/index.html
-          test -f site/ppo/videos/04_100_percent.mp4
-          test -f site/sac/videos/04_100_percent.mp4
-          test -f site/td3/videos/04_100_percent.mp4
+          for ALGO in ppo sac td3; do
+            test -f "site/${ALGO}/videos/best.mp4"
+            test -f "site/${ALGO}/videos/final.mp4"
+          done
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
         with:

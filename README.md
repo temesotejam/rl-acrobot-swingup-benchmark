@@ -19,7 +19,7 @@ Cart-Poleで個別に確立したPPO/SAC/TD3の学習・CI・評価・動画・P
 - control rate: 50 Hz (`dt=0.02 s`)
 - motor first-order lag: 0.05 s
 - joint viscous damping: 0.02 N m/(rad/s)
-- episode: 20 s
+- episode: **40 s**
 
 角度定義はGymnasium Acrobotと同じで、`theta1=0`は第1リンクが真下、`theta2`は第1リンクに対する相対角です。真上直線姿勢はおおむね `theta1=pi, theta2=0` です。
 
@@ -33,7 +33,7 @@ policyが見るのはノイズ付きの
 
 ## Reward
 
-途中終了で報酬を稼ぐ抜け道を避けるため、ゴール到達ではepisodeを終了しません。20秒間ずっと制御させます。
+途中終了で報酬を稼ぐ抜け道を避けるため、ゴール到達ではepisodeを終了しません。40秒間ずっと制御させます。
 
 主な要素は、
 
@@ -46,14 +46,22 @@ policyが見るのはノイズ付きの
 
 です。
 
-## Curriculum
+## Adaptive curriculum
 
-1. `near_upright`
-2. `upper`
-3. `full`
-4. `downward_mix`
+固定4段階ではなく、downward-start評価を使って難易度を自動調整します。
+
+1. `near_upright` warmup
+2. `mixed_upper`: 30% near-upright + 70% upper
+3. `mixed_mid`: 20% near-upright + 50% upper + 30% full
+4. `mixed_full`: 15% near-upright + 35% upper + 50% full
+5. `mixed_downward`: 10% near-upright + 20% upper + 30% full + 40% downward
 
 評価はすべて`evaluation_downward`、つまりほぼ真下から開始します。
+
+- downward評価が昇格条件を**2 block連続**で満たすと次の難易度へ進みます。
+- 大きな性能退行を検出すると、1段戻って`models/best.zip`へrollbackします。
+- SAC/TD3は`best-replay.pkl`も一緒に復元し、replay bufferを含むoff-policy学習状態を保持します。
+- 同じlevelで最大3 block停滞した場合は、探索のため次levelへ進みます。
 
 ## 評価指標
 
@@ -77,6 +85,8 @@ Captureはtip height >= 1.0 mかつ低角速度を0.5秒以上維持した場合
 | normal | 600,000 | 12 |
 | long | 1,200,000 | 20 |
 
+normalでは100k warmup後、50k stepごとにdownward評価とadaptive transitionを実行します。
+
 ## Algorithms
 
 ### PPO
@@ -86,8 +96,6 @@ Captureはtip height >= 1.0 mかつ低角速度を0.5秒以上維持した場合
 - gamma 0.995
 - GAE 0.95
 - SDE enabled
-
-PPOのrollout粒度が各curriculum区間をちょうど割り切るように`n_steps`を選んでいます。
 
 ### SAC
 
@@ -114,11 +122,11 @@ PPOのrollout粒度が各curriculum区間をちょうど割り切るように`n_
 
 PRではunit test後、PPO/SAC/TD3のquick学習を3 runnerで並列実行します。mainへのbenchmark trigger追加でnormal学習も3方式同時に走ります。
 
-各runはモデル、5段階動画、plots、CSV、metadataをArtifactへ保存し、compact summaryを`training-results/run-N/{ppo,sac,td3}`へ残します。
+各runはモデル、`best.mp4` / `final.mp4`、plots、CSV、metadataをArtifactへ保存し、compact summaryと`best-checkpoint.json`を`training-results/run-N/{ppo,sac,td3}`へ残します。
 
 ## GitHub Pages
 
-3方式の最終動画、Capture、安定化率、RMS torque、学習時間を同じページで比較します。
+3方式について **best checkpoint** と **学習終了時の状態** を別々に表示し、Capture、安定化率、RMS torque、学習時間、動画を同じページで比較します。
 
 ## References
 

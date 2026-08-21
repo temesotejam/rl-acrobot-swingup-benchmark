@@ -15,7 +15,7 @@ from stable_baselines3 import PPO, SAC, TD3
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.noise import NormalActionNoise
 
-from .curriculum import ADAPTIVE_LEVELS, decide_transition, make_training_env
+from .curriculum import ADAPTIVE_LEVELS, decide_transition, make_training_env, ready_to_advance
 from .environment import PhysicsConfig, SensorNoiseConfig
 from .evaluation import evaluate_episode, evaluate_policy
 from .reporting import checkpoint_rank, create_plots, select_best_record, write_metrics_csv, write_summary
@@ -204,6 +204,7 @@ def main() -> None:
     evaluation_seeds = [args.seed + 100 + i for i in range(evaluation_episodes)]
     video_seed = args.seed + 999
     max_blocks_per_level = int(adaptive_cfg["max_blocks_per_level"])
+    required_advance_streak = int(adaptive_cfg["advance_confirmation_blocks"])
     configured_levels = tuple(str(value) for value in adaptive_cfg["levels"])
     if configured_levels != ADAPTIVE_LEVELS:
         raise ValueError(f"Configured levels {configured_levels} do not match {ADAPTIVE_LEVELS}")
@@ -211,6 +212,8 @@ def main() -> None:
         raise ValueError("warmup_timesteps must be between zero and total_timesteps")
     if block_timesteps <= 0:
         raise ValueError("adaptive_block_timesteps must be positive")
+    if required_advance_streak <= 0:
+        raise ValueError("advance_confirmation_blocks must be positive")
 
     output_dir = args.output_dir.resolve()
     models_dir, videos_dir, plots_dir = output_dir / "models", output_dir / "videos", output_dir / "plots"
@@ -247,6 +250,7 @@ def main() -> None:
 
     level = int(adaptive_cfg["start_level"])
     blocks_at_level = 0
+    advance_streak = 0
     block_index = 0
     while consumed_timesteps < total_timesteps:
         block_index += 1
@@ -279,12 +283,19 @@ def main() -> None:
                 f"capture={current['capture_rate']*100:.1f}% goal={current['goal_ratio']*100:.1f}%"
             )
 
+        if ready_to_advance(current, level):
+            advance_streak += 1
+        else:
+            advance_streak = 0
+
         decision = decide_transition(
             current=current,
             best_before_block=best_before_block,
             level=level,
             blocks_at_level=blocks_at_level,
             max_blocks_per_level=max_blocks_per_level,
+            advance_streak=advance_streak,
+            required_advance_streak=required_advance_streak,
         )
         decisions.append(
             {
@@ -295,19 +306,22 @@ def main() -> None:
                 "action": decision.action,
                 "next_level": decision.next_level,
                 "reason": decision.reason,
+                "advance_streak": advance_streak,
                 "best_stage_after_block": None if best_record is None else best_record["stage"],
             }
         )
         print(
             f"Adaptive decision={decision.action} level={level}->{decision.next_level} "
-            f"reason={decision.reason}"
+            f"advance_streak={advance_streak}/{required_advance_streak} reason={decision.reason}"
         )
         if decision.action == "rollback":
             model = restore_best_state(model, args.algorithm, models_dir)
             print(f"Restored best checkpoint={best_record['stage'] if best_record else 'unknown'}")
             blocks_at_level = 0
+            advance_streak = 0
         elif decision.action == "advance":
             blocks_at_level = 0
+            advance_streak = 0
         level = decision.next_level
 
     model.save(models_dir / "final.zip")

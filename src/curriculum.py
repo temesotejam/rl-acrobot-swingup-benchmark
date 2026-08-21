@@ -8,26 +8,26 @@ import numpy as np
 from .environment import PhysicsConfig, SensorNoiseConfig, make_acrobot_env
 
 
-# Later levels deliberately keep substantial mass on easier starts.  The v2
-# benchmark still forgot useful swing-up behaviour when 65% of resets suddenly
-# became downward starts, so v3 softens the hardest distribution and lets the
-# controller move between levels based on downward-start evaluation.
+# Later levels deliberately keep substantial mass on easier starts.  v3 showed
+# that jumping directly from mixed_upper to mixed_full could still collapse SAC,
+# so v4 inserts mixed_mid and softens the full/downward distributions.
 RESET_MIXTURES: dict[str, tuple[tuple[str, float], ...]] = {
     "near_upright": (("near_upright", 1.0),),
     "upper": (("upper", 1.0),),
     "full": (("full", 1.0),),
     "downward_mix": (("downward_mix", 1.0),),
     "mixed_upper": (("near_upright", 0.30), ("upper", 0.70)),
-    "mixed_full": (("near_upright", 0.15), ("upper", 0.25), ("full", 0.60)),
+    "mixed_mid": (("near_upright", 0.20), ("upper", 0.50), ("full", 0.30)),
+    "mixed_full": (("near_upright", 0.15), ("upper", 0.35), ("full", 0.50)),
     "mixed_downward": (
         ("near_upright", 0.10),
-        ("upper", 0.15),
-        ("full", 0.25),
-        ("evaluation_downward", 0.50),
+        ("upper", 0.20),
+        ("full", 0.30),
+        ("evaluation_downward", 0.40),
     ),
 }
 
-ADAPTIVE_LEVELS = ("mixed_upper", "mixed_full", "mixed_downward")
+ADAPTIVE_LEVELS = ("mixed_upper", "mixed_mid", "mixed_full", "mixed_downward")
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,9 @@ def ready_to_advance(record: dict, level: int) -> bool:
     if level == 0:
         return capture >= 0.10 or goal >= 0.05
     if level == 1:
-        return capture >= 0.25 or goal >= 0.08
+        return capture >= 0.20 or goal >= 0.07
+    if level == 2:
+        return capture >= 0.30 or goal >= 0.10
     return False
 
 
@@ -77,6 +79,8 @@ def decide_transition(
     level: int,
     blocks_at_level: int,
     max_blocks_per_level: int,
+    advance_streak: int,
+    required_advance_streak: int,
 ) -> AdaptiveDecision:
     if severe_regression(current, best_before_block):
         return AdaptiveDecision(
@@ -85,10 +89,16 @@ def decide_transition(
             reason="downward evaluation regressed relative to the retained best checkpoint",
         )
     if level < len(ADAPTIVE_LEVELS) - 1 and ready_to_advance(current, level):
+        if advance_streak >= required_advance_streak:
+            return AdaptiveDecision(
+                action="advance",
+                next_level=level + 1,
+                reason=f"advancement gate confirmed for {advance_streak} consecutive blocks",
+            )
         return AdaptiveDecision(
-            action="advance",
-            next_level=level + 1,
-            reason="downward evaluation met the advancement gate",
+            action="hold",
+            next_level=level,
+            reason=f"advancement gate met; awaiting {required_advance_streak} consecutive confirmations",
         )
     if level < len(ADAPTIVE_LEVELS) - 1 and blocks_at_level >= max_blocks_per_level:
         return AdaptiveDecision(

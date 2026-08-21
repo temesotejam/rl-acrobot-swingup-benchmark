@@ -49,4 +49,5 @@ adaptive_curriculum:
   warmup_reset_mode: near_upright
   start_level: 0
   max_blocks_per_level: 3
-  levels: [mixed_upper, mixed_full, mixed_downward]
+  advance_confirmation_blocks: 2
+  levels: [mixed_upper, mixed_mid, mixed_full, mixed_downward]

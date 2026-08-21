@@ -5,6 +5,7 @@ import math
 import numpy as np
 
 from src.curriculum import (
+    ADAPTIVE_LEVELS,
     RESET_MIXTURES,
     ResetMixtureWrapper,
     decide_transition,
@@ -42,9 +43,15 @@ def test_upright_geometry_and_40s_horizon() -> None:
 
 
 def test_adaptive_mixtures_keep_old_regions_alive() -> None:
+    assert ADAPTIVE_LEVELS == ("mixed_upper", "mixed_mid", "mixed_full", "mixed_downward")
     assert RESET_MIXTURES["mixed_upper"] == (("near_upright", 0.30), ("upper", 0.70))
-    assert RESET_MIXTURES["mixed_full"] == (("near_upright", 0.15), ("upper", 0.25), ("full", 0.60))
-    assert RESET_MIXTURES["mixed_downward"][-1] == ("evaluation_downward", 0.50)
+    assert RESET_MIXTURES["mixed_mid"] == (
+        ("near_upright", 0.20), ("upper", 0.50), ("full", 0.30)
+    )
+    assert RESET_MIXTURES["mixed_full"] == (
+        ("near_upright", 0.15), ("upper", 0.35), ("full", 0.50)
+    )
+    assert RESET_MIXTURES["mixed_downward"][-1] == ("evaluation_downward", 0.40)
 
     base = make_acrobot_env(sensor_noise=SensorNoiseConfig(enabled=False), reset_mode="near_upright")
     env = ResetMixtureWrapper(base, reset_mode="mixed_downward")
@@ -58,25 +65,61 @@ def test_adaptive_mixtures_keep_old_regions_alive() -> None:
     env.close()
 
 
-def test_adaptive_controller_advances_on_success() -> None:
+def test_adaptive_controller_requires_confirmed_success() -> None:
     current = {"capture_rate": 0.25, "goal_ratio": 0.09, "final_stable_rate": 0.0}
-    decision = decide_transition(current, None, level=1, blocks_at_level=1, max_blocks_per_level=3)
-    assert decision.action == "advance"
-    assert decision.next_level == 2
+    first = decide_transition(
+        current,
+        None,
+        level=1,
+        blocks_at_level=1,
+        max_blocks_per_level=3,
+        advance_streak=1,
+        required_advance_streak=2,
+    )
+    assert first.action == "hold"
+    assert first.next_level == 1
+
+    second = decide_transition(
+        current,
+        None,
+        level=1,
+        blocks_at_level=2,
+        max_blocks_per_level=3,
+        advance_streak=2,
+        required_advance_streak=2,
+    )
+    assert second.action == "advance"
+    assert second.next_level == 2
 
 
 def test_adaptive_controller_rolls_back_on_skill_loss() -> None:
     best = {"capture_rate": 0.50, "goal_ratio": 0.12, "final_stable_rate": 0.0}
     current = {"capture_rate": 0.0, "goal_ratio": 0.01, "final_stable_rate": 0.0}
     assert severe_regression(current, best)
-    decision = decide_transition(current, best, level=2, blocks_at_level=1, max_blocks_per_level=3)
+    decision = decide_transition(
+        current,
+        best,
+        level=2,
+        blocks_at_level=1,
+        max_blocks_per_level=3,
+        advance_streak=0,
+        required_advance_streak=2,
+    )
     assert decision.action == "rollback"
     assert decision.next_level == 1
 
 
 def test_adaptive_controller_eventually_advances_without_gate() -> None:
     current = {"capture_rate": 0.0, "goal_ratio": 0.0, "final_stable_rate": 0.0}
-    decision = decide_transition(current, None, level=0, blocks_at_level=3, max_blocks_per_level=3)
+    decision = decide_transition(
+        current,
+        None,
+        level=0,
+        blocks_at_level=3,
+        max_blocks_per_level=3,
+        advance_streak=0,
+        required_advance_streak=2,
+    )
     assert decision.action == "advance"
     assert decision.next_level == 1
 
@@ -100,7 +143,7 @@ def test_best_checkpoint_prefers_control_success_over_return() -> None:
             "goal_ratio": 0.0, "mean_return": 1000.0,
         },
         {
-            "stage": "block_03_mixed_full", "final_stable_rate": 0.0, "capture_rate": 0.25,
+            "stage": "block_03_mixed_mid", "final_stable_rate": 0.0, "capture_rate": 0.25,
             "goal_ratio": 0.04, "mean_return": 300.0,
         },
         {
@@ -108,4 +151,4 @@ def test_best_checkpoint_prefers_control_success_over_return() -> None:
             "goal_ratio": 0.0, "mean_return": 500.0,
         },
     ]
-    assert select_best_record(records)["stage"] == "block_03_mixed_full"
+    assert select_best_record(records)["stage"] == "block_03_mixed_mid"
