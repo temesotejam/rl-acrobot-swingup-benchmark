@@ -51,17 +51,30 @@ jobs:
         run: |
           test -f "ci-results/${{ matrix.algorithm }}/summary.md"
           test -f "ci-results/${{ matrix.algorithm }}/metrics.csv"
+          test -f "ci-results/${{ matrix.algorithm }}/metadata.json"
           test -f "ci-results/${{ matrix.algorithm }}/best-checkpoint.json"
           test -f "ci-results/${{ matrix.algorithm }}/models/best.zip"
           test -f "ci-results/${{ matrix.algorithm }}/models/final.zip"
           test -f "ci-results/${{ matrix.algorithm }}/videos/best.mp4"
           test -f "ci-results/${{ matrix.algorithm }}/videos/final.mp4"
+          grep -q '^final_model,' "ci-results/${{ matrix.algorithm }}/metrics.csv"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          algorithm = os.environ["ALGORITHM"]
+          metadata = json.loads(Path(f"ci-results/{algorithm}/metadata.json").read_text())
+          assert metadata["final_checkpoint"]["stage"] == "final_model"
+          assert 0.0 <= float(metadata["final_model_difficulty"]) <= 1.0
+          PY
+        env:
+          ALGORITHM: ${{ matrix.algorithm }}
       - name: Build dashboard smoke test
         run: |
           python web/build_pages.py --root ci-results --output site --run-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           test -f site/index.html
           test -f "site/${{ matrix.algorithm }}/videos/best.mp4"
           test -f "site/${{ matrix.algorithm }}/videos/final.mp4"
+          grep -q '実際に保存された final model' site/index.html
       - uses: actions/upload-artifact@v7
         with:
           name: acrobot-${{ matrix.algorithm }}-smoke-${{ github.run_number }}
