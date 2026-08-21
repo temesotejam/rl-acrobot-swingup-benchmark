@@ -16,6 +16,10 @@ ppo:
 
 sac:
   learning_rate: 0.0003
+  min_learning_rate: 0.0001
+  rollback_learning_rate_factor: 0.70
+  recovery_refill_steps: 5000
+  restore_replay_buffer_on_rollback: false
   buffer_size: 800000
   learning_starts: 5000
   batch_size: 256
@@ -28,16 +32,20 @@ sac:
   net_arch: [256, 256]
 
 td3:
-  learning_rate: 0.001
+  learning_rate: 0.0003
+  min_learning_rate: 0.00005
+  rollback_learning_rate_factor: 0.50
+  recovery_refill_steps: 5000
+  restore_replay_buffer_on_rollback: false
   buffer_size: 800000
   learning_starts: 5000
   batch_size: 256
   tau: 0.005
   gamma: 0.99
-  train_freq: 1
+  train_freq: 2
   gradient_steps: 1
-  action_noise_sigma: 0.20
+  action_noise_sigma: 0.15
   policy_delay: 2
-  target_policy_noise: 0.20
-  target_noise_clip: 0.50
+  target_policy_noise: 0.10
+  target_noise_clip: 0.25
   net_arch: [256, 256]

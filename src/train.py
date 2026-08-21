@@ -14,14 +14,16 @@ import yaml
 from stable_baselines3 import PPO, SAC, TD3
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.noise import NormalActionNoise
+from stable_baselines3.common.utils import get_schedule_fn
 
 from .curriculum import decide_difficulty, make_training_env, ready_to_advance
-from .environment import PhysicsConfig, SensorNoiseConfig
+from .environment import PhysicsConfig, SensorNoiseConfig, reward_metadata
 from .evaluation import evaluate_episode, evaluate_policy
 from .reporting import checkpoint_rank, create_plots, select_best_record, write_metrics_csv, write_summary
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALGORITHMS = {"ppo", "sac", "td3"}
+OFF_POLICY_ALGORITHMS = {"sac", "td3"}
 MODEL_CLASSES = {"ppo": PPO, "sac": SAC, "td3": TD3}
 
 
@@ -77,6 +79,7 @@ def record_stage(
     print(
         f"[{stage}] consumed_steps={timesteps:,} difficulty={difficulty:.3f} return={metrics.mean_return:.1f} "
         f"capture={metrics.capture_rate*100:.1f}% capture_t={capture_t} "
+        f"stable_dwell={metrics.stable_ratio*100:.1f}% "
         f"final_stable={metrics.final_stable_rate*100:.1f}% train_wall={training_wall_time_s:.1f}s"
     )
     return record
@@ -156,9 +159,38 @@ def make_model(
     )
 
 
-def train_for(model, steps: int) -> float:
+def apply_learning_rate(model, learning_rate: float) -> None:
+    """Replace the constant SB3 learning-rate schedule and active optimizers."""
+    learning_rate = float(learning_rate)
+    model.learning_rate = learning_rate
+    model.lr_schedule = get_schedule_fn(learning_rate)
+    optimizers = []
+    for name in ("policy", "actor", "critic"):
+        obj = getattr(model, name, None)
+        optimizer = getattr(obj, "optimizer", None)
+        if optimizer is not None and optimizer not in optimizers:
+            optimizers.append(optimizer)
+    ent_optimizer = getattr(model, "ent_coef_optimizer", None)
+    if ent_optimizer is not None and ent_optimizer not in optimizers:
+        optimizers.append(ent_optimizer)
+    for optimizer in optimizers:
+        for group in optimizer.param_groups:
+            group["lr"] = learning_rate
+
+
+def train_for(model, steps: int, recovery_refill_steps: int = 0) -> float:
+    """Train for exactly `steps`, optionally collecting fresh replay first."""
     started = time.perf_counter()
-    model.learn(total_timesteps=steps, reset_num_timesteps=False, progress_bar=False, log_interval=20)
+    refill = min(max(int(recovery_refill_steps), 0), int(steps))
+    if refill > 0 and hasattr(model, "gradient_steps"):
+        original_gradient_steps = int(model.gradient_steps)
+        print(f"Recovery replay refill: {refill:,} steps with gradient updates disabled")
+        model.gradient_steps = 0
+        model.learn(total_timesteps=refill, reset_num_timesteps=False, progress_bar=False, log_interval=20)
+        model.gradient_steps = original_gradient_steps
+    remaining = int(steps) - refill
+    if remaining > 0:
+        model.learn(total_timesteps=remaining, reset_num_timesteps=False, progress_bar=False, log_interval=20)
     return time.perf_counter() - started
 
 
@@ -181,11 +213,16 @@ def save_best_state(
     evaluate_episode(model, video_seed, physics, noise, videos_dir / "best.mp4")
 
 
-def restore_best_state(model, algorithm: str, models_dir: Path):
+def restore_best_state(
+    model,
+    algorithm: str,
+    models_dir: Path,
+    restore_replay_buffer: bool = True,
+):
     env = model.get_env()
     restored = MODEL_CLASSES[algorithm].load(models_dir / "best.zip", env=env, device="cpu")
     replay_path = models_dir / "best-replay.pkl"
-    if replay_path.exists() and hasattr(restored, "load_replay_buffer"):
+    if restore_replay_buffer and replay_path.exists() and hasattr(restored, "load_replay_buffer"):
         restored.load_replay_buffer(replay_path)
     return restored
 
@@ -196,6 +233,7 @@ def main() -> None:
     set_global_seed(args.seed)
     preset_cfg = benchmark["presets"][args.preset]
     adaptive_cfg = benchmark["adaptive_curriculum"]
+    algorithm_cfg = algorithm_configs[args.algorithm]
     physics = PhysicsConfig(**benchmark["physics"])
     noise = SensorNoiseConfig(**benchmark["sensor_noise"])
 
@@ -213,6 +251,12 @@ def main() -> None:
     max_blocks_at_difficulty = int(adaptive_cfg["max_blocks_at_difficulty"])
     required_advance_streak = int(adaptive_cfg["advance_confirmation_blocks"])
 
+    current_learning_rate = float(algorithm_cfg["learning_rate"])
+    min_learning_rate = float(algorithm_cfg.get("min_learning_rate", current_learning_rate))
+    rollback_lr_factor = float(algorithm_cfg.get("rollback_learning_rate_factor", 1.0))
+    configured_refill_steps = int(algorithm_cfg.get("recovery_refill_steps", 0))
+    restore_replay_on_rollback = bool(algorithm_cfg.get("restore_replay_buffer_on_rollback", True))
+
     if not 0 < warmup_timesteps < total_timesteps:
         raise ValueError("warmup_timesteps must be between zero and total_timesteps")
     if block_timesteps <= 0:
@@ -225,6 +269,8 @@ def main() -> None:
         raise ValueError("regression_step_shrink must be in (0, 1]")
     if max_blocks_at_difficulty <= 0 or required_advance_streak <= 0:
         raise ValueError("adaptive block counts must be positive")
+    if min_learning_rate <= 0.0 or rollback_lr_factor <= 0.0 or rollback_lr_factor > 1.0:
+        raise ValueError("off-policy learning-rate recovery settings are invalid")
 
     output_dir = args.output_dir.resolve()
     models_dir, videos_dir, plots_dir = output_dir / "models", output_dir / "videos", output_dir / "plots"
@@ -239,6 +285,8 @@ def main() -> None:
     consumed_timesteps = 0
     training_wall_time_s = 0.0
     best_record: dict | None = None
+    rollback_count = 0
+    pending_recovery_refill = 0
 
     warmup_mode = str(adaptive_cfg["warmup_reset_mode"])
     model.get_env().env_method("set_reset_mode", warmup_mode)
@@ -255,7 +303,8 @@ def main() -> None:
     save_best_state(model, best_record, output_dir, models_dir, videos_dir, video_seed, physics, noise)
     print(
         f"New best checkpoint={warmup_stage} difficulty={initial_difficulty:.3f} "
-        f"capture={current['capture_rate']*100:.1f}% goal={current['goal_ratio']*100:.1f}%"
+        f"capture={current['capture_rate']*100:.1f}% stable_dwell={current['stable_ratio']*100:.1f}% "
+        f"goal={current['goal_ratio']*100:.1f}%"
     )
 
     difficulty = initial_difficulty
@@ -271,11 +320,14 @@ def main() -> None:
         steps = min(block_timesteps, total_timesteps - consumed_timesteps)
         model.get_env().env_method("set_difficulty", training_difficulty)
         model.get_env().reset()
+        refill_this_block = min(pending_recovery_refill, steps)
         print(
             f"Adaptive block={block_index} difficulty={training_difficulty:.3f} step={difficulty_step:.3f} "
+            f"lr={current_learning_rate:.6g} refill={refill_this_block:,} "
             f"steps={steps:,} consumed_before={consumed_timesteps:,}"
         )
-        training_wall_time_s += train_for(model, steps)
+        training_wall_time_s += train_for(model, steps, recovery_refill_steps=refill_this_block)
+        pending_recovery_refill = 0
         consumed_timesteps += steps
         blocks_at_difficulty += 1
         model_difficulty = training_difficulty
@@ -292,7 +344,8 @@ def main() -> None:
             save_best_state(model, best_record, output_dir, models_dir, videos_dir, video_seed, physics, noise)
             print(
                 f"New best checkpoint={stage} difficulty={training_difficulty:.3f} "
-                f"capture={current['capture_rate']*100:.1f}% goal={current['goal_ratio']*100:.1f}%"
+                f"capture={current['capture_rate']*100:.1f}% stable_dwell={current['stable_ratio']*100:.1f}% "
+                f"goal={current['goal_ratio']*100:.1f}%"
             )
 
         if ready_to_advance(current, training_difficulty):
@@ -312,21 +365,9 @@ def main() -> None:
             min_difficulty_step=min_step,
             regression_step_shrink=regression_step_shrink,
         )
-        decisions.append(
-            {
-                "stage": stage,
-                "consumed_timesteps": consumed_timesteps,
-                "difficulty_before": training_difficulty,
-                "difficulty_step_before": difficulty_step,
-                "action": decision.action,
-                "next_difficulty": decision.next_difficulty,
-                "next_difficulty_step": decision.next_step,
-                "reason": decision.reason,
-                "advance_streak": advance_streak,
-                "best_stage_after_block": None if best_record is None else best_record["stage"],
-                "best_difficulty_after_block": None if best_record is None else best_record["difficulty"],
-            }
-        )
+        learning_rate_before = current_learning_rate
+        next_learning_rate = current_learning_rate
+
         print(
             f"Adaptive decision={decision.action} difficulty={training_difficulty:.3f}->{decision.next_difficulty:.3f} "
             f"step={difficulty_step:.3f}->{decision.next_step:.3f} "
@@ -334,7 +375,32 @@ def main() -> None:
         )
 
         if decision.action == "rollback":
-            model = restore_best_state(model, args.algorithm, models_dir)
+            rollback_count += 1
+            if args.algorithm in OFF_POLICY_ALGORITHMS:
+                next_learning_rate = max(min_learning_rate, current_learning_rate * rollback_lr_factor)
+            model = restore_best_state(
+                model,
+                args.algorithm,
+                models_dir,
+                restore_replay_buffer=(
+                    restore_replay_on_rollback if args.algorithm in OFF_POLICY_ALGORITHMS else True
+                ),
+            )
+            if args.algorithm in OFF_POLICY_ALGORITHMS:
+                apply_learning_rate(model, next_learning_rate)
+                pending_recovery_refill = configured_refill_steps
+                recovery_seed = args.seed + 100_000 + rollback_count * 997
+                np.random.seed(recovery_seed)
+                torch.manual_seed(recovery_seed)
+                action_noise = getattr(model, "action_noise", None)
+                if action_noise is not None and hasattr(action_noise, "reset"):
+                    action_noise.reset()
+                model.get_env().seed(recovery_seed)
+                print(
+                    f"Off-policy recovery: lr={learning_rate_before:.6g}->{next_learning_rate:.6g}, "
+                    f"replay={'restored' if restore_replay_on_rollback else 'fresh'}, "
+                    f"refill_next={pending_recovery_refill:,}, recovery_seed={recovery_seed}"
+                )
             model_difficulty = float(best_record["difficulty"] if best_record is not None else 0.0)
             print(
                 f"Restored best checkpoint={best_record['stage'] if best_record else 'unknown'} "
@@ -346,11 +412,28 @@ def main() -> None:
             blocks_at_difficulty = 0
             advance_streak = 0
 
+        decisions.append(
+            {
+                "stage": stage,
+                "consumed_timesteps": consumed_timesteps,
+                "difficulty_before": training_difficulty,
+                "difficulty_step_before": difficulty_step,
+                "action": decision.action,
+                "next_difficulty": decision.next_difficulty,
+                "next_difficulty_step": decision.next_step,
+                "reason": decision.reason,
+                "advance_streak": advance_streak,
+                "learning_rate_before": learning_rate_before,
+                "next_learning_rate": next_learning_rate,
+                "recovery_refill_next": pending_recovery_refill,
+                "best_stage_after_block": None if best_record is None else best_record["stage"],
+                "best_difficulty_after_block": None if best_record is None else best_record["difficulty"],
+            }
+        )
+        current_learning_rate = next_learning_rate
         difficulty = decision.next_difficulty
         difficulty_step = decision.next_step
 
-    # Save and freshly evaluate the model that is actually delivered after any
-    # last-block rollback.  This keeps Pages metrics aligned with final.mp4.
     model.save(models_dir / "final.zip")
     final_record = record_stage(
         records, "final_model", 1.0, consumed_timesteps, training_wall_time_s,
@@ -377,14 +460,17 @@ def main() -> None:
         "video_seed": video_seed,
         "physics": physics.to_dict(),
         "sensor_noise": noise.to_dict(),
+        "reward": reward_metadata(),
         "adaptive_curriculum": adaptive_cfg,
         "adaptive_decisions": decisions,
         "next_planned_difficulty": difficulty,
         "final_model_difficulty": model_difficulty,
         "final_difficulty_step": difficulty_step,
+        "rollback_count": rollback_count,
+        "final_learning_rate": current_learning_rate,
         "best_checkpoint": best_record,
         "final_checkpoint": final_record,
-        "algorithm_config": algorithm_configs[args.algorithm],
+        "algorithm_config": algorithm_cfg,
         "versions": version_info(),
     }
     (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")

@@ -26,6 +26,7 @@ class EpisodeMetrics:
     captured: bool
     capture_time_s: float
     final_stable: bool
+    stable_ratio: float
     goal_ratio: float
     high_ratio: float
     max_tip_height_m: float
@@ -41,6 +42,7 @@ class AggregateMetrics:
     capture_rate: float
     mean_capture_time_s: float
     final_stable_rate: float
+    stable_ratio: float
     goal_ratio: float
     high_ratio: float
     max_tip_height_m: float
@@ -121,6 +123,7 @@ def evaluate_episode(
 
     final_window_steps = max(1, int(round(2.0 / physics.dt_s)))
     final_stable = len(stable_flags) >= final_window_steps and float(np.mean(stable_flags[-final_window_steps:])) >= 0.80
+    stable_ratio = float(np.mean(stable_flags)) if stable_flags else 0.0
     height_arr = np.asarray(heights, dtype=np.float64)
     speed_arr = np.asarray(speeds, dtype=np.float64)
     torque_arr = np.asarray(torques, dtype=np.float64)
@@ -130,6 +133,7 @@ def evaluate_episode(
         captured=not math.isnan(capture_time),
         capture_time_s=capture_time,
         final_stable=bool(final_stable),
+        stable_ratio=stable_ratio,
         goal_ratio=float(np.mean(height_arr >= 1.0)),
         high_ratio=float(np.mean(height_arr >= 1.5)),
         max_tip_height_m=float(np.max(height_arr)),
@@ -154,6 +158,7 @@ def evaluate_policy(
         capture_rate=float(np.mean([e.captured for e in episodes])),
         mean_capture_time_s=float(np.mean(capture_times)) if capture_times else math.nan,
         final_stable_rate=float(np.mean([e.final_stable for e in episodes])),
+        stable_ratio=float(np.mean([e.stable_ratio for e in episodes])),
         goal_ratio=float(np.mean([e.goal_ratio for e in episodes])),
         high_ratio=float(np.mean([e.high_ratio for e in episodes])),
         max_tip_height_m=float(np.mean([e.max_tip_height_m for e in episodes])),
