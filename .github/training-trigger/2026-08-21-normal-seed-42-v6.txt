@@ -1,0 +1,4 @@
+preset=normal
+seed=42
+algorithms=ppo,sac,td3
+reason=v6 stability shaping and off-policy fresh-replay recovery
