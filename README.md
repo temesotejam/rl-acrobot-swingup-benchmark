@@ -46,22 +46,29 @@ policyが見るのはノイズ付きの
 
 です。
 
-## Adaptive curriculum
+## Continuous adaptive curriculum
 
-固定4段階ではなく、downward-start評価を使って難易度を自動調整します。
+v5では離散的な`mixed_upper / mixed_mid / mixed_full / mixed_downward`の切替をやめ、**difficulty = 0.000〜1.000**の連続値でreset分布を補間します。
 
-1. `near_upright` warmup
-2. `mixed_upper`: 30% near-upright + 70% upper
-3. `mixed_mid`: 20% near-upright + 50% upper + 30% full
-4. `mixed_full`: 15% near-upright + 35% upper + 50% full
-5. `mixed_downward`: 10% near-upright + 20% upper + 30% full + 40% downward
+アンカーは以下です。
 
-評価はすべて`evaluation_downward`、つまりほぼ真下から開始します。
+| Difficulty | near-upright | upper | full | downward |
+|---:|---:|---:|---:|---:|
+| 0.00 | 30% | 70% | 0% | 0% |
+| 0.35 | 20% | 50% | 30% | 0% |
+| 0.70 | 15% | 35% | 50% | 0% |
+| 1.00 | 10% | 20% | 30% | 40% |
 
-- downward評価が昇格条件を**2 block連続**で満たすと次の難易度へ進みます。
-- 大きな性能退行を検出すると、1段戻って`models/best.zip`へrollbackします。
+アンカー間は線形補間されます。評価は常に`evaluation_downward`、つまりほぼ真下から開始します。
+
+- 初期difficulty stepは`0.10`です。
+- downward評価が昇格条件を**2 block連続**で満たすとdifficultyをstep分だけ上げます。
+- 同じdifficultyで最大3 block停滞した場合も、小さなprobeとしてstep分だけ難しくします。
+- 大きな性能退行を検出すると`models/best.zip`へrollbackします。
+- rollback時にはdifficultyをbest checkpointの値へ戻し、stepを半分へ縮めます。最小stepは`0.025`です。
 - SAC/TD3は`best-replay.pkl`も一緒に復元し、replay bufferを含むoff-policy学習状態を保持します。
-- 同じlevelで最大3 block停滞した場合は、探索のため次levelへ進みます。
+
+これにより「少し難しくしただけで崩れる境界」を、固定段階ではなく細かく探索できます。
 
 ## 評価指標
 
@@ -73,6 +80,7 @@ policyが見るのはノイズ付きの
 - Maximum tip height
 - RMS joint speed
 - RMS actuator torque
+- Curriculum difficulty
 - **Training wall time**
 
 Captureはtip height >= 1.0 mかつ低角速度を0.5秒以上維持した場合です。Final stableは最終2秒の80%以上で同条件を満たした場合です。
@@ -85,7 +93,7 @@ Captureはtip height >= 1.0 mかつ低角速度を0.5秒以上維持した場合
 | normal | 600,000 | 12 |
 | long | 1,200,000 | 20 |
 
-normalでは100k warmup後、50k stepごとにdownward評価とadaptive transitionを実行します。
+normalでは100k warmup後、**25k stepごと**にdownward評価とdifficulty更新を実行します。v4の50k間隔より短くし、SAC/TD3の急な性能退行を早く検出します。
 
 ## Algorithms
 
@@ -96,6 +104,7 @@ normalでは100k warmup後、50k stepごとにdownward評価とadaptive transiti
 - gamma 0.995
 - GAE 0.95
 - SDE enabled
+- normal `n_steps=625`（4 envで2,500 step/rollout、25k blockをちょうど分割）
 
 ### SAC
 
@@ -122,11 +131,15 @@ normalでは100k warmup後、50k stepごとにdownward評価とadaptive transiti
 
 PRではunit test後、PPO/SAC/TD3のquick学習を3 runnerで並列実行します。mainへのbenchmark trigger追加でnormal学習も3方式同時に走ります。
 
-各runはモデル、`best.mp4` / `final.mp4`、plots、CSV、metadataをArtifactへ保存し、compact summaryと`best-checkpoint.json`を`training-results/run-N/{ppo,sac,td3}`へ残します。
+各runは`best.zip` / `final.zip`、`best.mp4` / `final.mp4`、plots、CSV、metadataをArtifactへ保存し、compact summaryと`best-checkpoint.json`を`training-results/run-N/{ppo,sac,td3}`へ残します。
+
+## Delivered final model
+
+rollbackが最後のblockで起きても表示が食い違わないよう、学習終了後に**実際に`models/final.zip`へ保存するモデルを評価seed一式で再評価**します。`metrics.csv`の`final_model`行と`metadata.json`の`final_checkpoint`が、その実モデルの数値です。
 
 ## GitHub Pages
 
-3方式について **best checkpoint** と **学習終了時の状態** を別々に表示し、Capture、安定化率、RMS torque、学習時間、動画を同じページで比較します。
+3方式について **best checkpoint** と **実際に保存されたfinal model** を別々に表示し、Capture、安定化率、difficulty、RMS torque、学習時間、動画を同じページで比較します。
 
 ## References
 

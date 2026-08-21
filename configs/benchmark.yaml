@@ -8,12 +8,12 @@ presets:
     total_timesteps: 600000
     evaluation_episodes: 12
     warmup_timesteps: 100000
-    adaptive_block_timesteps: 50000
+    adaptive_block_timesteps: 25000
   long:
     total_timesteps: 1200000
     evaluation_episodes: 20
     warmup_timesteps: 150000
-    adaptive_block_timesteps: 75000
+    adaptive_block_timesteps: 50000
 
 physics:
   gravity: 9.8
@@ -47,7 +47,9 @@ sensor_noise:
 
 adaptive_curriculum:
   warmup_reset_mode: near_upright
-  start_level: 0
-  max_blocks_per_level: 3
+  initial_difficulty: 0.0
+  initial_difficulty_step: 0.10
+  min_difficulty_step: 0.025
+  regression_step_shrink: 0.50
+  max_blocks_at_difficulty: 3
   advance_confirmation_blocks: 2
-  levels: [mixed_upper, mixed_mid, mixed_full, mixed_downward]
