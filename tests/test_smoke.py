@@ -9,10 +9,18 @@ from src.curriculum import (
     decide_difficulty,
     mixture_for_difficulty,
     readiness_thresholds,
+    ready_to_advance,
     severe_regression,
 )
-from src.environment import ContinuousAcrobotEnv, PhysicsConfig, SensorNoiseConfig, make_acrobot_env
+from src.environment import (
+    ContinuousAcrobotEnv,
+    PhysicsConfig,
+    SensorNoiseConfig,
+    make_acrobot_env,
+    reward_metadata,
+)
 from src.reporting import select_best_record
+from src.train import train_for
 
 
 def test_downward_reset_and_finite_step() -> None:
@@ -40,6 +48,14 @@ def test_upright_geometry_and_40s_horizon() -> None:
     env.state[:] = [0.0, 0.0, 0.0, 0.0]
     assert abs(env.tip_height_m() + 2.0) < 1e-9
     env.close()
+
+
+def test_reward_metadata_tracks_stability_shaping() -> None:
+    metadata = reward_metadata()
+    assert metadata["version"] == "v6-continuous-stability"
+    assert float(metadata["stability_reward_weight"]) > 0.0
+    assert float(metadata["stability_dtheta1_scale_rad_s"]) == 1.0
+    assert float(metadata["stability_dtheta2_scale_rad_s"]) == 1.5
 
 
 def _mixture_dict(difficulty: float) -> dict[str, float]:
@@ -82,12 +98,27 @@ def test_continuous_wrapper_can_reach_downward_resets() -> None:
 def test_readiness_thresholds_increase_with_difficulty() -> None:
     easy = readiness_thresholds(0.0)
     hard = readiness_thresholds(1.0)
-    assert hard[0] > easy[0]
-    assert hard[1] > easy[1]
+    assert len(easy) == 3
+    assert all(h > e for e, h in zip(easy, hard, strict=True))
+
+
+def test_goal_dwell_without_capture_no_longer_advances() -> None:
+    record = {
+        "capture_rate": 0.0,
+        "goal_ratio": 0.30,
+        "stable_ratio": 0.0,
+        "final_stable_rate": 0.0,
+    }
+    assert not ready_to_advance(record, 0.0)
 
 
 def test_continuous_controller_requires_confirmed_success() -> None:
-    current = {"capture_rate": 0.25, "goal_ratio": 0.09, "final_stable_rate": 0.0}
+    current = {
+        "capture_rate": 0.25,
+        "goal_ratio": 0.09,
+        "stable_ratio": 0.03,
+        "final_stable_rate": 0.0,
+    }
     first = decide_difficulty(
         current=current,
         best_before_block=None,
@@ -123,10 +154,16 @@ def test_continuous_controller_rolls_back_and_refines_step() -> None:
     best = {
         "capture_rate": 0.50,
         "goal_ratio": 0.12,
+        "stable_ratio": 0.06,
         "final_stable_rate": 0.0,
         "difficulty": 0.20,
     }
-    current = {"capture_rate": 0.0, "goal_ratio": 0.01, "final_stable_rate": 0.0}
+    current = {
+        "capture_rate": 0.0,
+        "goal_ratio": 0.01,
+        "stable_ratio": 0.0,
+        "final_stable_rate": 0.0,
+    }
     assert severe_regression(current, best)
     decision = decide_difficulty(
         current=current,
@@ -146,7 +183,12 @@ def test_continuous_controller_rolls_back_and_refines_step() -> None:
 
 
 def test_continuous_controller_probes_after_consolidation() -> None:
-    current = {"capture_rate": 0.0, "goal_ratio": 0.0, "final_stable_rate": 0.0}
+    current = {
+        "capture_rate": 0.0,
+        "goal_ratio": 0.0,
+        "stable_ratio": 0.0,
+        "final_stable_rate": 0.0,
+    }
     decision = decide_difficulty(
         current=current,
         best_before_block=None,
@@ -163,6 +205,23 @@ def test_continuous_controller_probes_after_consolidation() -> None:
     assert abs(decision.next_difficulty - 0.10) < 1e-12
 
 
+def test_recovery_refill_collects_before_gradient_updates() -> None:
+    class DummyModel:
+        gradient_steps = 1
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+
+        def learn(self, total_timesteps: int, **kwargs):
+            self.calls.append((int(total_timesteps), int(self.gradient_steps)))
+            return self
+
+    model = DummyModel()
+    train_for(model, 100, recovery_refill_steps=25)
+    assert model.calls == [(25, 0), (75, 1)]
+    assert model.gradient_steps == 1
+
+
 def test_sensor_wrapper_stays_finite() -> None:
     env = make_acrobot_env(reset_mode="full")
     obs, _ = env.reset(seed=7)
@@ -175,19 +234,33 @@ def test_sensor_wrapper_stays_finite() -> None:
     env.close()
 
 
+def test_best_checkpoint_prefers_more_stable_dwell() -> None:
+    records = [
+        {
+            "stage": "block_a", "difficulty": 0.1, "final_stable_rate": 0.0, "capture_rate": 0.50,
+            "stable_ratio": 0.02, "goal_ratio": 0.15, "mean_return": 1200.0,
+        },
+        {
+            "stage": "block_b", "difficulty": 0.1, "final_stable_rate": 0.0, "capture_rate": 0.50,
+            "stable_ratio": 0.08, "goal_ratio": 0.13, "mean_return": 1100.0,
+        },
+    ]
+    assert select_best_record(records)["stage"] == "block_b"
+
+
 def test_best_checkpoint_ignores_delivered_final_alias() -> None:
     records = [
         {
             "stage": "random", "difficulty": 0.0, "final_stable_rate": 0.0, "capture_rate": 0.0,
-            "goal_ratio": 0.0, "mean_return": 1000.0,
+            "stable_ratio": 0.0, "goal_ratio": 0.0, "mean_return": 1000.0,
         },
         {
             "stage": "block_04_d0p200", "difficulty": 0.2, "final_stable_rate": 0.0, "capture_rate": 0.25,
-            "goal_ratio": 0.04, "mean_return": 300.0,
+            "stable_ratio": 0.04, "goal_ratio": 0.04, "mean_return": 300.0,
         },
         {
             "stage": "final_model", "difficulty": 0.2, "final_stable_rate": 0.0, "capture_rate": 0.25,
-            "goal_ratio": 0.04, "mean_return": 300.0,
+            "stable_ratio": 0.04, "goal_ratio": 0.04, "mean_return": 300.0,
         },
     ]
     assert select_best_record(records)["stage"] == "block_04_d0p200"
