@@ -5,10 +5,10 @@ import math
 import numpy as np
 
 from src.curriculum import (
-    ADAPTIVE_LEVELS,
-    RESET_MIXTURES,
     ResetMixtureWrapper,
-    decide_transition,
+    decide_difficulty,
+    mixture_for_difficulty,
+    readiness_thresholds,
     severe_regression,
 )
 from src.environment import ContinuousAcrobotEnv, PhysicsConfig, SensorNoiseConfig, make_acrobot_env
@@ -42,86 +42,125 @@ def test_upright_geometry_and_40s_horizon() -> None:
     env.close()
 
 
-def test_adaptive_mixtures_keep_old_regions_alive() -> None:
-    assert ADAPTIVE_LEVELS == ("mixed_upper", "mixed_mid", "mixed_full", "mixed_downward")
-    assert RESET_MIXTURES["mixed_upper"] == (("near_upright", 0.30), ("upper", 0.70))
-    assert RESET_MIXTURES["mixed_mid"] == (
-        ("near_upright", 0.20), ("upper", 0.50), ("full", 0.30)
-    )
-    assert RESET_MIXTURES["mixed_full"] == (
-        ("near_upright", 0.15), ("upper", 0.35), ("full", 0.50)
-    )
-    assert RESET_MIXTURES["mixed_downward"][-1] == ("evaluation_downward", 0.40)
+def _mixture_dict(difficulty: float) -> dict[str, float]:
+    return dict(mixture_for_difficulty(difficulty))
 
+
+def test_continuous_curriculum_interpolates_smoothly() -> None:
+    easy = _mixture_dict(0.0)
+    mid = _mixture_dict(0.175)
+    hard = _mixture_dict(1.0)
+
+    assert easy == {"near_upright": 0.30, "upper": 0.70}
+    assert abs(mid["near_upright"] - 0.25) < 1e-12
+    assert abs(mid["upper"] - 0.60) < 1e-12
+    assert abs(mid["full"] - 0.15) < 1e-12
+    assert hard == {
+        "near_upright": 0.10,
+        "upper": 0.20,
+        "full": 0.30,
+        "evaluation_downward": 0.40,
+    }
+    assert abs(sum(mid.values()) - 1.0) < 1e-12
+
+
+def test_continuous_wrapper_can_reach_downward_resets() -> None:
     base = make_acrobot_env(sensor_noise=SensorNoiseConfig(enabled=False), reset_mode="near_upright")
-    env = ResetMixtureWrapper(base, reset_mode="mixed_downward")
+    env = ResetMixtureWrapper(base, reset_mode="near_upright")
+    env.set_difficulty(1.0)
     seen: set[str] = set()
     for seed in range(100):
         obs, info = env.reset(seed=seed)
         assert np.isfinite(obs).all()
+        assert info["curriculum_difficulty"] == 1.0
         seen.add(str(info["reset_mode"]))
     assert "evaluation_downward" in seen
     assert len(seen) >= 3
     env.close()
 
 
-def test_adaptive_controller_requires_confirmed_success() -> None:
+def test_readiness_thresholds_increase_with_difficulty() -> None:
+    easy = readiness_thresholds(0.0)
+    hard = readiness_thresholds(1.0)
+    assert hard[0] > easy[0]
+    assert hard[1] > easy[1]
+
+
+def test_continuous_controller_requires_confirmed_success() -> None:
     current = {"capture_rate": 0.25, "goal_ratio": 0.09, "final_stable_rate": 0.0}
-    first = decide_transition(
-        current,
-        None,
-        level=1,
-        blocks_at_level=1,
-        max_blocks_per_level=3,
+    first = decide_difficulty(
+        current=current,
+        best_before_block=None,
+        difficulty=0.20,
+        difficulty_step=0.10,
+        blocks_at_difficulty=1,
+        max_blocks_at_difficulty=3,
         advance_streak=1,
         required_advance_streak=2,
+        min_difficulty_step=0.025,
+        regression_step_shrink=0.50,
     )
     assert first.action == "hold"
-    assert first.next_level == 1
+    assert abs(first.next_difficulty - 0.20) < 1e-12
 
-    second = decide_transition(
-        current,
-        None,
-        level=1,
-        blocks_at_level=2,
-        max_blocks_per_level=3,
+    second = decide_difficulty(
+        current=current,
+        best_before_block=None,
+        difficulty=0.20,
+        difficulty_step=0.10,
+        blocks_at_difficulty=2,
+        max_blocks_at_difficulty=3,
         advance_streak=2,
         required_advance_streak=2,
+        min_difficulty_step=0.025,
+        regression_step_shrink=0.50,
     )
     assert second.action == "advance"
-    assert second.next_level == 2
+    assert abs(second.next_difficulty - 0.30) < 1e-12
 
 
-def test_adaptive_controller_rolls_back_on_skill_loss() -> None:
-    best = {"capture_rate": 0.50, "goal_ratio": 0.12, "final_stable_rate": 0.0}
+def test_continuous_controller_rolls_back_and_refines_step() -> None:
+    best = {
+        "capture_rate": 0.50,
+        "goal_ratio": 0.12,
+        "final_stable_rate": 0.0,
+        "difficulty": 0.20,
+    }
     current = {"capture_rate": 0.0, "goal_ratio": 0.01, "final_stable_rate": 0.0}
     assert severe_regression(current, best)
-    decision = decide_transition(
-        current,
-        best,
-        level=2,
-        blocks_at_level=1,
-        max_blocks_per_level=3,
+    decision = decide_difficulty(
+        current=current,
+        best_before_block=best,
+        difficulty=0.30,
+        difficulty_step=0.10,
+        blocks_at_difficulty=1,
+        max_blocks_at_difficulty=3,
         advance_streak=0,
         required_advance_streak=2,
+        min_difficulty_step=0.025,
+        regression_step_shrink=0.50,
     )
     assert decision.action == "rollback"
-    assert decision.next_level == 1
+    assert abs(decision.next_difficulty - 0.20) < 1e-12
+    assert abs(decision.next_step - 0.05) < 1e-12
 
 
-def test_adaptive_controller_eventually_advances_without_gate() -> None:
+def test_continuous_controller_probes_after_consolidation() -> None:
     current = {"capture_rate": 0.0, "goal_ratio": 0.0, "final_stable_rate": 0.0}
-    decision = decide_transition(
-        current,
-        None,
-        level=0,
-        blocks_at_level=3,
-        max_blocks_per_level=3,
+    decision = decide_difficulty(
+        current=current,
+        best_before_block=None,
+        difficulty=0.0,
+        difficulty_step=0.10,
+        blocks_at_difficulty=3,
+        max_blocks_at_difficulty=3,
         advance_streak=0,
         required_advance_streak=2,
+        min_difficulty_step=0.025,
+        regression_step_shrink=0.50,
     )
-    assert decision.action == "advance"
-    assert decision.next_level == 1
+    assert decision.action == "probe"
+    assert abs(decision.next_difficulty - 0.10) < 1e-12
 
 
 def test_sensor_wrapper_stays_finite() -> None:
@@ -136,19 +175,19 @@ def test_sensor_wrapper_stays_finite() -> None:
     env.close()
 
 
-def test_best_checkpoint_prefers_control_success_over_return() -> None:
+def test_best_checkpoint_ignores_delivered_final_alias() -> None:
     records = [
         {
-            "stage": "random", "final_stable_rate": 0.0, "capture_rate": 0.0,
+            "stage": "random", "difficulty": 0.0, "final_stable_rate": 0.0, "capture_rate": 0.0,
             "goal_ratio": 0.0, "mean_return": 1000.0,
         },
         {
-            "stage": "block_03_mixed_mid", "final_stable_rate": 0.0, "capture_rate": 0.25,
+            "stage": "block_04_d0p200", "difficulty": 0.2, "final_stable_rate": 0.0, "capture_rate": 0.25,
             "goal_ratio": 0.04, "mean_return": 300.0,
         },
         {
-            "stage": "block_07_mixed_downward", "final_stable_rate": 0.0, "capture_rate": 0.0,
-            "goal_ratio": 0.0, "mean_return": 500.0,
+            "stage": "final_model", "difficulty": 0.2, "final_stable_rate": 0.0, "capture_rate": 0.25,
+            "goal_ratio": 0.04, "mean_return": 300.0,
         },
     ]
-    assert select_best_record(records)["stage"] == "block_03_mixed_mid"
+    assert select_best_record(records)["stage"] == "block_04_d0p200"
