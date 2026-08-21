@@ -9,6 +9,23 @@ from gymnasium import spaces
 from PIL import Image, ImageDraw
 
 
+REWARD_VERSION = "v6-continuous-stability"
+STABILITY_REWARD_WEIGHT = 0.65
+STABILITY_HEIGHT_START_M = 0.75
+STABILITY_DTHETA1_SCALE_RAD_S = 1.0
+STABILITY_DTHETA2_SCALE_RAD_S = 1.5
+
+
+def reward_metadata() -> dict[str, float | str]:
+    return {
+        "version": REWARD_VERSION,
+        "stability_reward_weight": STABILITY_REWARD_WEIGHT,
+        "stability_height_start_m": STABILITY_HEIGHT_START_M,
+        "stability_dtheta1_scale_rad_s": STABILITY_DTHETA1_SCALE_RAD_S,
+        "stability_dtheta2_scale_rad_s": STABILITY_DTHETA2_SCALE_RAD_S,
+    }
+
+
 def wrap_angle(value: float) -> float:
     return (value + math.pi) % (2.0 * math.pi) - math.pi
 
@@ -202,12 +219,19 @@ class ContinuousAcrobotEnv(gym.Env):
         height_score = float(np.clip((height + 2.0) / 4.0, 0.0, 1.0))
         extension = 0.5 * (1.0 + math.cos(theta2))
         motion = min((abs(dtheta1) + 0.5 * abs(dtheta2)) / 5.0, 1.0)
+        stability_height = float(np.clip((height - STABILITY_HEIGHT_START_M) / (2.0 - STABILITY_HEIGHT_START_M), 0.0, 1.0))
+        stability_speed = math.exp(
+            -0.5 * (dtheta1 / STABILITY_DTHETA1_SCALE_RAD_S) ** 2
+            -0.5 * (dtheta2 / STABILITY_DTHETA2_SCALE_RAD_S) ** 2
+        )
+        stability_score = stability_height * stability_speed
         reward = (
             0.05
             + 0.95 * height_score
             + 0.30 * height_score**2
             + 0.10 * height_score * extension
             + 0.03 * (1.0 - height_score) * motion
+            + STABILITY_REWARD_WEIGHT * stability_score
             - 0.004 * (dtheta1 / 4.0) ** 2
             - 0.002 * (dtheta2 / 8.0) ** 2
             - 0.004 * (self.actual_torque_nm / p.max_torque_nm) ** 2
@@ -230,7 +254,7 @@ class ContinuousAcrobotEnv(gym.Env):
         pivot = np.array([width / 2.0, height_px / 2.0], dtype=float)
         scale = 120.0
         theta1, theta2 = self.state[:2]
-        p1 = pivot + np.array([p.physics_dummy if False else self.physics.link_length_1_m * math.sin(theta1) * scale, self.physics.link_length_1_m * math.cos(theta1) * scale])
+        p1 = pivot + np.array([self.physics.link_length_1_m * math.sin(theta1) * scale, self.physics.link_length_1_m * math.cos(theta1) * scale])
         p2 = p1 + np.array([self.physics.link_length_2_m * math.sin(theta1 + theta2) * scale, self.physics.link_length_2_m * math.cos(theta1 + theta2) * scale])
         target_y = pivot[1] - 1.0 * scale
         draw.line((40, target_y, width - 40, target_y), fill=(130, 130, 135), width=2)
